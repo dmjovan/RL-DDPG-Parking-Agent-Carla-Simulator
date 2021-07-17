@@ -333,10 +333,10 @@ class CarlaEnvironment:
     def obstacle_data(self, obstacle_data):
         self.front_obstacle_distance = obstacle_data.distance
 
-    # function for processing occasional obstacle data 
+    # function for processing radar readings
     def radar_data(self, radar_data, key):
 
-        # numpy array with size (len(radar_data), 4) with [[vel, altitude, azimuth, depth],...[,,,]]:
+        # numpy array with size (len(radar_data), 4) with values like --> [[vel, altitude, azimuth, depth],...[,,,]]:
         radar_points = np.frombuffer(radar_data.raw_data, dtype=np.dtype('f4')).reshape((len(radar_data), 4))
 
         # getting only min depth
