@@ -35,11 +35,13 @@ import carla
 _HOST_ = '127.0.0.1'
 _PORT_ = 2000
 
+_SLEEP_TIME_ = 0.5 # s
+
 # path to this folder
 FOLDER_PATH = os.getcwd()
 
 # path to simplified map of parking
-CSV_PATH = FOLDER_PATH + '/env_scripts_and_data/parking_map_for_spawn_on_entrance.csv'
+MAP_CSV_PATH = FOLDER_PATH + '/env_scripts_and_data/parking_map_for_spawn_on_'
 
 # global variable for (en/dis)abling spawning of vehicles on the sides of goal parking spot
 VEHICLES_ON_SIDE_AVAILABLE = False
@@ -48,7 +50,7 @@ VEHICLES_ON_SIDE_AVAILABLE = False
 ACTIONS_SIZE = 2
 
 # number of varibles in one state vector
-STATE_SIZE = 16 
+STATE_SIZE = 15
 
 # ---------------------------------------------------------------------------------------------------
 # GLOBAL VARIABLES FOR TRAINING 
@@ -98,10 +100,9 @@ class CarlaEnvironment:
 
     # initially current state is set to None
     current_state = None 
-    front_obstacle_distance = None
 
     # constructor of the class
-    def __init__(self):
+    def __init__(self, spawn_waypoint):
 
         self.client = carla.Client(_HOST_, _PORT_)
         self.client.set_timeout(10.0)
@@ -119,10 +120,7 @@ class CarlaEnvironment:
         self.spawning_z_offset = 0.5
 
         # getting simplified parking map
-        self.start_transform, self.spectator_transform, self.parking_map = self.get_parking_map()
-
-        # initialization of distance to the front obstacle - set to max value of 20 meters
-        self.front_obstacle_distance = 20.0 
+        self.start_transform, self.spectator_transform, self.parking_map = self.get_parking_map(spawn_waypoint)
 
         # all 8 radar readings - set to max value od 20 meters
         self.radar_readings = {
@@ -140,10 +138,12 @@ class CarlaEnvironment:
         self.world.get_spectator().set_transform(self.spectator_transform)
 
     # function for getting real spots on parking lot from previously catched data while observing environment / Town05
-    def get_parking_map(self):
+    def get_parking_map(self, spawn_waypoint):
+
+        full_path = MAP_CSV_PATH + spawn_waypoint + '.csv'
         
         # reading previously formed parking.csv file
-        df = pd.read_csv(CSV_PATH, index_col = ['position'])
+        df = pd.read_csv(full_path, index_col = ['position'])
         df = df.apply(pd.to_numeric, errors='coerce')
 
         # starting transform
@@ -256,13 +256,6 @@ class CarlaEnvironment:
         self.actor_list.append(self.collision_sensor)
         self.collision_sensor.listen(lambda data: self.collision_data(data))
 
-        # adding obstacle sensor on our agent
-        obstacle_sensor = self.blueprint_library.find('sensor.other.obstacle')
-        obstacle_sensor_transform = carla.Transform(carla.Location(x=self.model_3_length/2.0, z=self.model_3_heigth/2.0), carla.Rotation(yaw=0.0))
-        self.obstacle_sensor = self.world.spawn_actor(obstacle_sensor, obstacle_sensor_transform, attach_to=self.vehicle)
-        self.actor_list.append(self.obstacle_sensor)
-        self.obstacle_sensor.listen(lambda obstacle_data: self.obstacle_data(obstacle_data))
-
         # --------------------------------------------------------------------------------------
         # adding 8 radars on 8 positions on vehicle
 
@@ -329,10 +322,6 @@ class CarlaEnvironment:
     def collision_data(self, data):
         self.collision_hist.append(data)
 
-    # function for processing occasional obstacle data 
-    def obstacle_data(self, obstacle_data):
-        self.front_obstacle_distance = obstacle_data.distance
-
     # function for processing radar readings
     def radar_data(self, radar_data, key):
 
@@ -361,9 +350,7 @@ class CarlaEnvironment:
         # vx - linear velocity along x-axis of vehicle
         # ax - acceleration along x-axis of vehicle
         # wz - angular velocity along z-axis of vehicle - rotation velocity
-        # distance_to_goal - Euclidian distance from current position of vehicle to the goal position
-        # obstacle_distance - distance to the front obstacle (this information is drawn from another place)
-        #                     if he don't have any obastacle, then obstacle_distance is -1    
+        # distance_to_goal - Euclidian distance from current position of vehicle to the goal position  
 
         current_vehicle_transform = self.vehicle.get_transform()
         current_vehicle_location = current_vehicle_transform.location
@@ -372,7 +359,7 @@ class CarlaEnvironment:
         current_vehicle_linear_velocity = self.vehicle.get_velocity()
         current_vehicle_angular_velocity = self.vehicle.get_angular_velocity()
 
-        current_vehicle_acceleration= self.vehicle.get_acceleration()
+        current_vehicle_acceleration = self.vehicle.get_acceleration()
 
         # defining states --> in this config (Akerman's drive) there is no vy, only vx and wz
         x_rel = (self.parking_map['center'].location.x - current_vehicle_location.x)/40.0  
@@ -382,10 +369,9 @@ class CarlaEnvironment:
         ax = (current_vehicle_acceleration.x)/50.0 
         wz = (current_vehicle_angular_velocity.z)/50.0   
         distance_to_goal = (current_vehicle_location.distance(self.parking_map['center'].location))/40.0
-        obstacle_distance = self.front_obstacle_distance/20.0
 
         # definition of current state - concatenation of 8 radar readings and other values
-        current_state = [radar_reading/20.0 for radar_reading in list(self.radar_readings.values())] + [x_rel, y_rel, angle, vx, ax, wz, distance_to_goal, obstacle_distance]
+        current_state = [radar_reading/20.0 for radar_reading in list(self.radar_readings.values())] + [x_rel, y_rel, angle, vx, ax, wz, distance_to_goal]
 
         # dictionary for current state (sensor that are not radar readings)
         sensor_values_dict = {
@@ -396,7 +382,6 @@ class CarlaEnvironment:
                                 'ax': ax,
                                 'wz': wz,
                                 'distance_to_goal': distance_to_goal,
-                                'obstacle_distance': obstacle_distance
                              }
 
         # concatenation of radar_readings and other sensors readings and constructing new (current_state_dict) dictionary of them
@@ -422,7 +407,7 @@ class CarlaEnvironment:
         throttle = abs(actions['throttle'])
         steer = actions['steer']
 
-        # applying control (calculated from neural net) on our vehicle
+        # applying control (calculated from neural network) on our vehicle
         self.vehicle.apply_control(carla.VehicleControl(throttle=throttle, steer=steer, reverse=reverse))
 
         # waiting some minor time, so that control can be properly applied
@@ -471,7 +456,7 @@ class CarlaEnvironment:
             # if we exceeded time limit for episode, we are breaking that episode
             done = True
 
-        return self.current_state, reward, done, None
+        return self.current_state, reward, done
 
     # function for calculating current reward for just taken action
     def calculate_reward(self, distance, angle):
@@ -563,8 +548,8 @@ class DDPGAgent:
         inputs = layers.Input(shape=(STATE_SIZE,))
 
         # defining two fully conected layers
-        out = layers.Dense(256, activation='relu')(inputs)
-        out = layers.Dense(256, activation='relu')(out)
+        out = layers.Dense(300, activation='relu')(inputs)
+        out = layers.Dense(600, activation='relu')(out)
 
         # # output layers for 2 actions
         # throttle_action = layers.Dense(1, activation='sigmoid', kernel_initializer=last_init)(out)
@@ -583,7 +568,7 @@ class DDPGAgent:
         if LOAD_MODEL_WEIGHTS_ENABLED == True and os.path.exists(model_weights_file_name):
             model.load_weights(model_weights_file_name)
 
-        # if they don't exist, and it is about target nn, then copy actor weights
+        # if they don't exist, and it is about target nn (this means that we are creating new actor model), then copy actor weights
         elif model_name == '_target':
             model.set_weights(actor_model.get_weights())
 
@@ -600,18 +585,18 @@ class DDPGAgent:
 
         # state as input
         state_input = layers.Input(shape=(STATE_SIZE,))
-        state_out = layers.Dense(32, activation='relu')(state_input)
-        state_out = layers.Dense(64, activation='relu')(state_out)
+        state_out = layers.Dense(100, activation='relu')(state_input)
+        state_out = layers.Dense(200, activation='relu')(state_out)
 
         # action as input
         action_input = layers.Input(shape=(ACTIONS_SIZE,))
-        action_out = layers.Dense(64, activation='relu')(action_input)
+        action_out = layers.Dense(200, activation='relu')(action_input)
 
         # both are passed through seperate layer before concatenating
         concat = layers.Concatenate()([state_out, action_out])
 
-        out = layers.Dense(256, activation='relu')(concat)
-        out = layers.Dense(256, activation='relu')(out)
+        out = layers.Dense(300, activation='relu')(concat)
+        out = layers.Dense(600, activation='relu')(out)
         outputs = layers.Dense(1)(out)
 
         # defining Critic NN model
@@ -622,7 +607,7 @@ class DDPGAgent:
         if LOAD_MODEL_WEIGHTS_ENABLED == True and os.path.exists(model_weights_file_name):
             model.load_weights(model_weights_file_name)
 
-        # if they don't exist, and it is about target nn, then copy critic weights
+        # if they don't exist, and it is about target nn (this means that we are creating new critic model), then copy critic weights
         elif model_name == '_target':
             model.set_weights(critic_model.get_weights())
 
@@ -652,20 +637,17 @@ class DDPGAgent:
         throttle = float(sampled_actions[0] + max(epsilon, 0)*noise_throttle.sample_noise(sampled_actions[0]))
         steer = float(sampled_actions[1] + max(epsilon, 0)*noise_steer.sample_noise(sampled_actions[1]))
 
-        # manual clipping actions if they are out of bounds
-        # first action is throttle - bounds are -1 and 1
         if throttle > 1:
             throttle = 1
         elif throttle < -1:
-            throttle = -1 
+            throttle = -1
 
-        # third action is steer - bounds are -1 and 1
         if steer > 1:
             steer = 1
         elif steer < -1:
             steer = -1
 
-        # packing legal action in array
+        # packing action in array
         legal_actions_array = np.array([throttle, steer], dtype='float32').reshape((ACTIONS_SIZE,))
 
         # packing legal action in dictionary
@@ -787,9 +769,9 @@ def update_target(target_weights, actual_weights):
 if __name__ == '__main__':
 
     # seeding for more repetitive results
-    random.seed(4654)
-    np.random.seed(9413)
-    tf.random.set_seed(1451)
+    random.seed(1)
+    np.random.seed(2)
+    tf.random.set_seed(3)
 
     # memory fraction, mostly used when training multiple agents
     # GPU_options = tf.GPUOptions(per_process_gpu_memory_fraction=MEMORY_FRACTION)
@@ -801,8 +783,35 @@ if __name__ == '__main__':
 
     try: 
 
+        # default spawning/starting point
+        starting_waypoint = 'entrance'
+
+        waypoint_selected = False   
+
+        # loop for waiting for user response on which spawning point to spawn vehicle on start
+        while(True):
+
+            # selected waypoint for start position
+            selected_waypoint = input('Select waypoint for starting position (e/i): ')
+
+            if selected_waypoint == '':
+                continue
+
+            elif selected_waypoint == 'e':
+                starting_waypoint = 'entrance'
+                waypoint_selected = True
+
+            elif selected_waypoint == 'i':
+                starting_waypoint = 'intersection'
+                waypoint_selected = True
+
+            if waypoint_selected == True:
+                break
+
+            time.sleep(_SLEEP_TIME_)
+
         # creating Carla environment object
-        env = CarlaEnvironment()
+        env = CarlaEnvironment(starting_waypoint)
 
         # creating agent and environment
         agent = DDPGAgent()
@@ -817,12 +826,12 @@ if __name__ == '__main__':
                          }
 
         # making Actor and Critic neural networks
-        actor_model = agent.get_actor()
-        critic_model = agent.get_critic()
+        actor_model = agent.get_actor(manually_stopped=False)
+        critic_model = agent.get_critic(manually_stopped=False)
 
         # making target Actor and Critic neural networks
-        target_actor = agent.get_actor('_target')
-        target_critic = agent.get_critic('_target')
+        target_actor = agent.get_actor(model_name='_target', manually_stopped=False)
+        target_critic = agent.get_critic(model_name='_target', manually_stopped=False)
 
         # defining optimizers for actor and critic NNs
         actor_optimizer = tf.keras.optimizers.Adam(ACTOR_LR)
@@ -836,6 +845,9 @@ if __name__ == '__main__':
 
         # to store average reward history of last few episodes
         average_reward_list = []
+
+        # steps taken for episodes
+        steps_list = []
 
         print('-----------------Start of training process---------------')
 
@@ -866,7 +878,7 @@ if __name__ == '__main__':
                 print('Throttle: {:.3f}, Steer: {:.3f}'.format(actions_dict['throttle'], actions_dict['steer']))
 
                 # recieve state and reward from environment
-                next_state, reward, done, _ = env.step(actions_dict)
+                next_state, reward, done = env.step(actions_dict)
 
                 # packing of observation
                 observation = {
@@ -909,6 +921,8 @@ if __name__ == '__main__':
             average_reward = np.mean(episode_reward_list[-AVERAGE_EPISODES_COUNT:])
             average_reward_list.append(average_reward)
 
+            steps_list.append(step)
+
         print('-----------------End of training process---------------')
         
         # if training proceeds correctly, the average episodic reward should increase with time.
@@ -932,6 +946,15 @@ if __name__ == '__main__':
         plt.legend(loc='upper right')
         plt.savefig(FOLDER_PATH + '/training_pictures_and_video/training_rewards_'+ str(time.time()) +'.png')
 
+        # plotting number of steps taken in episode
+        plt.figure(figsize = (10,10), dpi = 100)
+        plt.plot(np.arange(1,TOTAL_EPISODES+1), steps_list, color='green', linewidth=1.2)
+        plt.xlabel('Episode')
+        plt.ylabel('Number of steps')
+        plt.grid()
+        plt.title('Number of steps taken over episodes \n (episode lasts {} seconds)'.format(SECONDS_PER_EPISODE))
+        plt.savefig(FOLDER_PATH + '/training_pictures_and_video/training_steps_'+ str(time.time()) +'.png')
+
     # if program is manually stopped (using Ctrl + C) then models are stored as _manually_stopped 
     except KeyboardInterrupt:
 
@@ -944,13 +967,22 @@ if __name__ == '__main__':
 
         # plotting episodic and average episodic reward, even thought it is early/manually stopped
         plt.figure(figsize = (10,10), dpi = 100)
-        plt.plot(episode_reward_list, color='red', linewidth=1.2, label='episodic')
-        plt.plot(average_reward_list, color='green', linewidth=1.2, label='average episodic')
+        plt.plot(np.arange(1, len(episode_reward_list)+1), episode_reward_list, color='red', linewidth=1.2, label='episodic')
+        plt.plot(np.arange(1, len(average_reward_list)+1), average_reward_list, color='green', linewidth=1.2, label='average episodic')
         plt.xlabel('Episode')
         plt.ylabel('Rt')
         plt.grid()
-        plt.title('Episodic and Average Episodic Reward \n (average over every last {} episodes)'.format(AVERAGE_EPISODES_COUNT))
+        plt.title('Episodic and Average Episodic Reward \n (averaged over every last {} episodes) \n --- manually stopped at episode {}/{} ---'.format(AVERAGE_EPISODES_COUNT, episode-1, TOTAL_EPISODES))
         plt.legend(loc='upper right')
         plt.savefig(FOLDER_PATH + '/training_pictures_and_video/training_rewards_'+ str(time.time()) +'.png')
+
+        # plotting number of steps taken in episode
+        plt.figure(figsize = (10,10), dpi = 100)
+        plt.plot(np.arange(1, len(steps_list)+1), steps_list, color='green', linewidth=1.2)
+        plt.xlabel('Episode')
+        plt.ylabel('Number of steps')
+        plt.grid()
+        plt.title('Number of steps taken over episodes \n (episode lasts {} seconds) \n --- manually stopped at episode {}/{} ---'.format(SECONDS_PER_EPISODE, episode-1, TOTAL_EPISODES))
+        plt.savefig(FOLDER_PATH + '/training_pictures_and_video/training_steps_'+ str(time.time()) +'.png')
 
    
