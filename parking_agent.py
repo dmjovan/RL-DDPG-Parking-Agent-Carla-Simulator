@@ -533,7 +533,7 @@ class OUActionNoise:
     # function for calling to generate noise using OU noise formula
     def __call__(self):
 
-        # this formula is taken from ----> https://www.wikipedia.org/wiki/Ornstein-Uhlenbeck_process.
+        # this formula is taken from ----> https://math.stackexchange.com/questions/1287634/implementing-ornstein-uhlenbeck-in-matlab
         x = self.x_prev + self.theta * (self.mu - self.x_prev) * self.dt + self.sigma * np.sqrt(self.dt) * np.random.normal(size=self.mu.shape)
 
         # store x into x_prev
