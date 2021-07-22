@@ -11,6 +11,7 @@ import numpy as np
 import cv2
 import math
 import pandas as pd
+from datetime import datetime
 import matplotlib.pyplot as plt
 
 import tensorflow as tf
@@ -51,6 +52,12 @@ ACTIONS_SIZE = 2
 
 # number of varibles in one state vector
 STATE_SIZE = 15
+
+# max distance from the goal point
+MAX_DISTANCE = 25
+
+# maximum of reward
+MAX_REWARD = 10
 
 # ---------------------------------------------------------------------------------------------------
 # GLOBAL VARIABLES FOR TRAINING 
@@ -220,6 +227,8 @@ class CarlaEnvironment:
     # function for reseting environment and starting new episode
     def reset(self):
         self.collision_hist = []
+        self.last_collisions_median = 0
+
         self.actor_list = []
  
         # spawning of our agent - Tesla Model 3 
@@ -319,8 +328,10 @@ class CarlaEnvironment:
         return self.current_state
 
     # function for appending new collision event to collision history
-    def collision_data(self, data):
-        self.collision_hist.append(data)
+    def collision_data(self, collision_data):
+        imp_3d = collision_data.normal_impulse
+        intesity = np.sqrt((imp_3d.x)**2 + (imp_3d.y)**2 + (imp_3d.z)**2)
+        self.collision_hist.append(intesity)
 
     # function for processing radar readings
     def radar_data(self, radar_data, key):
@@ -365,9 +376,9 @@ class CarlaEnvironment:
         x_rel = (self.parking_map['center'].location.x - current_vehicle_location.x)/40.0  
         y_rel = (self.parking_map['center'].location.y - current_vehicle_location.y)/40.0
         angle = (self.tranfsorm_angle(current_vehicle_rotation.yaw))/360
-        vx = (current_vehicle_linear_velocity.x)/50.0  
-        ax = (current_vehicle_acceleration.x)/50.0 
-        wz = (current_vehicle_angular_velocity.z)/50.0   
+        vx = (current_vehicle_linear_velocity.x)/20.0  
+        ax = (current_vehicle_acceleration.x)/10.0 
+        wz = (current_vehicle_angular_velocity.z)/10.0   
         distance_to_goal = (current_vehicle_location.distance(self.parking_map['center'].location))/40.0
 
         # definition of current state - concatenation of 8 radar readings and other values
@@ -418,18 +429,29 @@ class CarlaEnvironment:
         # first, get new current state, because it is been changed due to applied control
         self.current_state, current_state_dict = self.get_current_state()
 
-        if len(self.collision_hist) != 0: 
+        distance = current_state_dict['distance_to_goal']*40.0
+        angle = current_state_dict['angle']*360.0
+
+        collisions_median = np.median(np.array(self.collision_hist))
+
+        if len(self.collision_hist) != 0 and collisions_median != self.last_collisions_median: 
         # if there was any collisons reward is very bad
         # and we are done for this episode
-            done = True
-            reward = -200
+            done = False # True
 
-        elif current_state_dict['distance_to_goal'] > 25:
-        # if we are more 25 meters away from the specified parking spot
+            # reward is negative median value of all collision (not mean, because 1 big hit could make this reward very bad)
+            reward = -collisions_median
+
+            self.last_collisions_median = collisions_median
+
+        elif distance > MAX_DISTANCE:
+        # if we are more MAX_DISTANCE meters away from the specified parking spot
         # then we are giving it some bad reward, and setting done to True 
         # for this episode, because vehicle is far away
-            done = True
-            reward = -50
+            done = False # True
+
+            # reward is negative distance to the goal
+            reward = -distance
 
         elif (self.episode_start + NON_MOVING_SECONDS) < time.time(): 
         # potentially there could be problem if our agent feels like it is better
@@ -437,20 +459,20 @@ class CarlaEnvironment:
         # penalize him for that... this could be wrapped with SECONDS_PER_EPISODE but because 
         # then this condition would also break when episode finishes, it is now separated
 
-            loc = carla.Location(x=current_state_dict['x'], y=current_state_dict['y'])
+            loc = self.vehicle.get_transform().location
             traveled_distance = self.start_transform.location.distance(loc)
 
             if traveled_distance <= 2:
                 done = True
-                reward = -20
+                reward = -200
             else:
                 done = False
-                reward = self.calculate_reward(current_state_dict['distance_to_goal'], current_state_dict['angle'])
+                reward = self.calculate_reward(distance, angle, mode='lin')
 
         else:
         # in every other situation reward will be calculated as proposed
             done = False
-            reward = self.calculate_reward(current_state_dict['distance_to_goal'], current_state_dict['angle'])
+            reward = self.calculate_reward(distance, angle, mode='lin')
 
         if ((self.episode_start + SECONDS_PER_EPISODE) < time.time()):
             # if we exceeded time limit for episode, we are breaking that episode
@@ -459,17 +481,27 @@ class CarlaEnvironment:
         return self.current_state, reward, done
 
     # function for calculating current reward for just taken action
-    def calculate_reward(self, distance, angle):
+    def calculate_reward(self, distance, angle, d_val_1=5, mode='exp'):
 
-        # calculating realtive angle to the goal orientation
+        # calculating relative angle to the goal orientation
         theta = self.tranfsorm_angle(self.parking_map['center'].rotation.yaw) - angle
 
-        # clipping distance so that there wont be +inf 
-        if distance < 0.001:
-            distance = 0.001
+        # penalty for angle
+        angle_penalty = np.cos(np.deg2rad(theta)) # abs(np.cos(np.deg2rad(theta)))
 
-        # reward value calculation
-        reward = (1.0/distance) * abs(np.cos(np.deg2rad(theta)))
+        # calculation of reward in exp/lin mode
+        if mode == 'exp':
+            alpha = d_val_1/(np.log(MAX_REWARD))
+            reward = MAX_REWARD*np.exp(-(distance/alpha))
+
+        elif mode == 'lin':
+            if distance >= d_val_1 and distance < MAX_DISTANCE :
+                reward = (-1.0/(MAX_DISTANCE-d_val_1))*distance + MAX_DISTANCE/(MAX_DISTANCE-d_val_1)
+            
+            elif distance >= 0 and distance < d_val_1:
+                reward = (1-MAX_REWARD)*distance/float(d_val_1) + MAX_REWARD            
+        
+        reward = reward * angle_penalty
 
         return reward
 
@@ -533,13 +565,13 @@ class DDPGAgent:
         pass
 
     # function for constucting Actor Model
-    def get_actor(self, model_name='', manually_stopped = False):
+    def get_actor(self, model_name='', terminated = False):
 
         # if manually stopped model is that what we want to get
-        manual = '_manually_stopped' if manually_stopped else ''
+        stopped = '_terminated' if terminated else ''
 
         # getting model name
-        model_weights_file_name = 'models/parking_agent_actor' + model_name + manual + '.h5'
+        model_weights_file_name = 'models/parking_agent'+ model_name + '_actor'  + stopped + '.h5'
 
         # initialize weights between -3e-3 and 3-e3
         last_init = tf.random_uniform_initializer(minval=-0.003, maxval=0.003)
@@ -551,15 +583,14 @@ class DDPGAgent:
         out = layers.Dense(300, activation='relu')(inputs)
         out = layers.Dense(600, activation='relu')(out)
 
-        # # output layers for 2 actions
-        # throttle_action = layers.Dense(1, activation='sigmoid', kernel_initializer=last_init)(out)
-        # brake_action = layers.Dense(1, activation='sigmoid', kernel_initializer=last_init)(out)
-        # steer_action = layers.Dense(1, activation='tanh', kernel_initializer=last_init)(out)
+        # output layers for 2 actions
+        throttle_action = layers.Dense(1, activation='sigmoid', kernel_initializer=last_init)(out)
+        steer_action = layers.Dense(1, activation='tanh', kernel_initializer=last_init)(out)
 
-        # # concatenated output layers
-        # outputs = layers.Concatenate()([throttle_action, brake_action, steer_action])
+        # concatenated output layers
+        outputs = layers.Concatenate()([throttle_action, steer_action])
 
-        outputs = layers.Dense(2, activation='tanh', kernel_initializer=last_init)(out)
+        # outputs = layers.Dense(2, activation='tanh', kernel_initializer=last_init)(out)
 
         # defining Actor NN model
         model = tf.keras.Model(inputs, outputs)
@@ -575,13 +606,13 @@ class DDPGAgent:
         return model
 
     # function for constucting Critic Model
-    def get_critic(self, model_name='', manually_stopped = False):
+    def get_critic(self, model_name='', terminated = False):
 
         # if manually stopped model is that what we want to get
-        manual = '_manually_stopped' if manually_stopped else ''
+        stopped = '_terminated' if terminated else ''
 
         # getting model name
-        model_weights_file_name = 'models/parking_agent_critic' + model_name + manual + '.h5'
+        model_weights_file_name = 'models/parking_agent'+ model_name +'_critic' + stopped + '.h5'
 
         # state as input
         state_input = layers.Input(shape=(STATE_SIZE,))
@@ -602,7 +633,7 @@ class DDPGAgent:
         # defining Critic NN model
         # outputs single value for give state-action (outputs critic)
         model = tf.keras.Model([state_input, action_input], outputs)
-
+       
         # loading weights if they exist
         if LOAD_MODEL_WEIGHTS_ENABLED == True and os.path.exists(model_weights_file_name):
             model.load_weights(model_weights_file_name)
@@ -781,6 +812,10 @@ if __name__ == '__main__':
     if not os.path.isdir('models'):
         os.makedirs('models')
 
+    # creating training_images folder
+    if not os.path.isdir('training_images'):
+        os.makedirs('training_images')
+
     try: 
 
         # default spawning/starting point
@@ -817,8 +852,8 @@ if __name__ == '__main__':
         agent = DDPGAgent()
 
         # Ornstein-Uhlenbeck noise objects
-        ou_noise_throttle = OUActionNoise(mu=np.zeros(1), sigma=0.2*np.ones(1), theta=1.0)
-        ou_noise_steer = OUActionNoise(mu=np.zeros(1), sigma=0.1*np.ones(1), theta=0.6)
+        ou_noise_throttle = OUActionNoise(mu=0.4*np.ones(1), sigma=0.8*np.ones(1), theta=1.0)
+        ou_noise_steer = OUActionNoise(mu=np.zeros(1), sigma=0.1*np.ones(1), theta=0.2)
 
         ou_noise_dict = {
                           'throttle': ou_noise_throttle,
@@ -826,12 +861,12 @@ if __name__ == '__main__':
                          }
 
         # making Actor and Critic neural networks
-        actor_model = agent.get_actor(manually_stopped=False)
-        critic_model = agent.get_critic(manually_stopped=False)
+        actor_model = agent.get_actor()
+        critic_model = agent.get_critic()
 
         # making target Actor and Critic neural networks
-        target_actor = agent.get_actor(model_name='_target', manually_stopped=False)
-        target_critic = agent.get_critic(model_name='_target', manually_stopped=False)
+        target_actor = agent.get_actor(model_name='_target')
+        target_critic = agent.get_critic(model_name='_target')
 
         # defining optimizers for actor and critic NNs
         actor_optimizer = tf.keras.optimizers.Adam(ACTOR_LR)
@@ -846,9 +881,6 @@ if __name__ == '__main__':
         # to store average reward history of last few episodes
         average_reward_list = []
 
-        # steps taken for episodes
-        steps_list = []
-
         print('-----------------Start of training process---------------')
 
         # main loop for training 
@@ -860,14 +892,8 @@ if __name__ == '__main__':
             # reset episodic reward
             episodic_reward = 0
 
-            # reset episodic inner loop counter
-            step = 0
-
             # while loop for iterating in one episode
             while True:
-
-                # incrementing inner loop counter
-                step += 1
 
                 # tensorlow previous state
                 tf_previous_state = tf.expand_dims(tf.convert_to_tensor(previous_state), 0)
@@ -875,10 +901,10 @@ if __name__ == '__main__':
                 # sampling actions
                 actions_arr, actions_dict = agent.policy(tf_previous_state, ou_noise_dict)
 
-                print('Throttle: {:.3f}, Steer: {:.3f}'.format(actions_dict['throttle'], actions_dict['steer']))
-
                 # recieve state and reward from environment
                 next_state, reward, done = env.step(actions_dict)
+
+                print('Throttle: {:.3f}, Steer: {:.3f} ---> Reward: {:.3f}'.format(actions_dict['throttle'], actions_dict['steer'], reward))
 
                 # packing of observation
                 observation = {
@@ -915,13 +941,11 @@ if __name__ == '__main__':
             # on the end of one episode, append to the list for episodic rewards, that episodic reward
             episode_reward_list.append(episodic_reward)
 
-            print('Episode * {} * Average Episode Reward is ==> {}'.format(episode, episodic_reward/step))
+            print('Episode * {} * Episodic Reward is ==> {}'.format(episode, episodic_reward))
 
             # mean of last AVERAGE_EPISODES_COUNT episodes is average_reward
             average_reward = np.mean(episode_reward_list[-AVERAGE_EPISODES_COUNT:])
             average_reward_list.append(average_reward)
-
-            steps_list.append(step)
 
         print('-----------------End of training process---------------')
         
@@ -935,6 +959,9 @@ if __name__ == '__main__':
         target_actor.save_weights('models/parking_agent_actor_target.h5')
         target_critic.save_weights('models/parking_agent_critic_target.h5')
 
+        now = datetime.now()
+        date_time_string = now.strftime('%d-%m-%Y_%H-%M-%S')
+
         # plotting episodic and average episodic reward
         plt.figure(figsize = (10,10), dpi = 100)
         plt.plot(np.arange(1,TOTAL_EPISODES+1), episode_reward_list, color='red', linewidth=1.2, label='episodic')
@@ -944,26 +971,20 @@ if __name__ == '__main__':
         plt.grid()
         plt.title('Episodic and Average Episodic Reward \n (average over every last {} episodes)'.format(AVERAGE_EPISODES_COUNT))
         plt.legend(loc='upper right')
-        plt.savefig(FOLDER_PATH + '/training_pictures_and_video/training_rewards_'+ str(time.time()) +'.png')
+        plt.savefig(FOLDER_PATH + '/training_images/training_rewards_'+ date_time_string +'.png')
 
-        # plotting number of steps taken in episode
-        plt.figure(figsize = (10,10), dpi = 100)
-        plt.plot(np.arange(1,TOTAL_EPISODES+1), steps_list, color='green', linewidth=1.2)
-        plt.xlabel('Episode')
-        plt.ylabel('Number of steps')
-        plt.grid()
-        plt.title('Number of steps taken over episodes \n (episode lasts {} seconds)'.format(SECONDS_PER_EPISODE))
-        plt.savefig(FOLDER_PATH + '/training_pictures_and_video/training_steps_'+ str(time.time()) +'.png')
-
-    # if program is manually stopped (using Ctrl + C) then models are stored as _manually_stopped 
-    except KeyboardInterrupt:
+    # if program is stopped by any error or using Ctrl + C models are saved as terminated
+    except :
 
         # saving manually stopped models
-        actor_model.save_weights('models/parking_agent_actor_manually_stopped.h5')
-        critic_model.save_weights('models/parking_agent_critic_manually_stopped.h5')
+        actor_model.save_weights('models/parking_agent_actor_terminated.h5')
+        critic_model.save_weights('models/parking_agent_critic_terminated.h5')
 
-        target_actor.save_weights('models/parking_agent_actor_target_manually_stopped.h5')
-        target_critic.save_weights('models/parking_agent_critic_target_manually_stopped.h5')
+        target_actor.save_weights('models/parking_agent_actor_target_terminated.h5')
+        target_critic.save_weights('models/parking_agent_critic_target_terminated.h5')
+
+        now = datetime.now()
+        date_time_string = now.strftime('%d-%m-%Y_%H-%M-%S')
 
         # plotting episodic and average episodic reward, even thought it is early/manually stopped
         plt.figure(figsize = (10,10), dpi = 100)
@@ -972,48 +993,6 @@ if __name__ == '__main__':
         plt.xlabel('Episode')
         plt.ylabel('Rt')
         plt.grid()
-        plt.title('Episodic and Average Episodic Reward \n (averaged over every last {} episodes) \n --- manually stopped at episode {}/{} ---'.format(AVERAGE_EPISODES_COUNT, episode-1, TOTAL_EPISODES))
+        plt.title('Episodic and Average Episodic Reward \n (averaged over every last {} episodes) \n --- terminated at episode {}/{} ---'.format(AVERAGE_EPISODES_COUNT, episode-1, TOTAL_EPISODES))
         plt.legend(loc='upper right')
-        plt.savefig(FOLDER_PATH + '/training_pictures_and_video/training_rewards_manually_stopped_'+ str(time.time()) +'.png')
-
-        # plotting number of steps taken in episode
-        plt.figure(figsize = (10,10), dpi = 100)
-        plt.plot(np.arange(1, len(steps_list)+1), steps_list, color='green', linewidth=1.2)
-        plt.xlabel('Episode')
-        plt.ylabel('Number of steps')
-        plt.grid()
-        plt.title('Number of steps taken over episodes \n (episode lasts {} seconds) \n --- manually stopped at episode {}/{} ---'.format(SECONDS_PER_EPISODE, episode-1, TOTAL_EPISODES))
-        plt.savefig(FOLDER_PATH + '/training_pictures_and_video/training_steps_manually_stopped_'+ str(time.time()) +'.png')
-
-    # if any other exception gets caught, we are doing same 
-    except:
-
-        # saving manually stopped models
-        actor_model.save_weights('models/parking_agent_actor_error_stopped.h5')
-        critic_model.save_weights('models/parking_agent_critic_error_stopped.h5')
-
-        target_actor.save_weights('models/parking_agent_actor_target_error_stopped.h5')
-        target_critic.save_weights('models/parking_agent_critic_target_error_stopped.h5')
-
-        # plotting episodic and average episodic reward, even thought it is early/manually stopped
-        plt.figure(figsize = (10,10), dpi = 100)
-        plt.plot(np.arange(1, len(episode_reward_list)+1), episode_reward_list, color='red', linewidth=1.2, label='episodic')
-        plt.plot(np.arange(1, len(average_reward_list)+1), average_reward_list, color='green', linewidth=1.2, label='average episodic')
-        plt.xlabel('Episode')
-        plt.ylabel('Rt')
-        plt.grid()
-        plt.title('Episodic and Average Episodic Reward \n (averaged over every last {} episodes) \n --- stopped by error at episode {}/{} ---'.format(AVERAGE_EPISODES_COUNT, episode-1, TOTAL_EPISODES))
-        plt.legend(loc='upper right')
-        plt.savefig(FOLDER_PATH + '/training_pictures_and_video/training_rewards_error_stopped_'+ str(time.time()) +'.png')
-
-        # plotting number of steps taken in episode
-        plt.figure(figsize = (10,10), dpi = 100)
-        plt.plot(np.arange(1, len(steps_list)+1), steps_list, color='green', linewidth=1.2)
-        plt.xlabel('Episode')
-        plt.ylabel('Number of steps')
-        plt.grid()
-        plt.title('Number of steps taken over episodes \n (episode lasts {} seconds) \n --- stopped by error at episode {}/{} ---'.format(SECONDS_PER_EPISODE, episode-1, TOTAL_EPISODES))
-        plt.savefig(FOLDER_PATH + '/training_pictures_and_video/training_steps_error_stopped_'+ str(time.time()) +'.png')
-
-
-   
+        plt.savefig(FOLDER_PATH + '/training_images/training_rewards_terminated_'+ date_time_string +'.png')
