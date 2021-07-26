@@ -8,7 +8,6 @@ import sys
 import random
 import time
 import numpy as np
-import cv2
 import math
 import pandas as pd
 from datetime import datetime
@@ -57,7 +56,10 @@ STATE_SIZE = 15
 MAX_DISTANCE = 25
 
 # maximum of reward
-MAX_REWARD = 10
+MAX_REWARD = 20
+
+# std. dev for reward
+SIGMA = 6.0
 
 # ---------------------------------------------------------------------------------------------------
 # GLOBAL VARIABLES FOR TRAINING 
@@ -66,22 +68,19 @@ MAX_REWARD = 10
 LOAD_MODEL_WEIGHTS_ENABLED = False
 
 # total number of episodes
-TOTAL_EPISODES = 1000
+TOTAL_EPISODES = 2000
 
 # duration of one episode
-SECONDS_PER_EPISODE = 50
-
-# duration of one episode
-NON_MOVING_SECONDS = 20
+SECONDS_PER_EPISODE = 100
 
 # number of episodes to get average estimate
-AVERAGE_EPISODES_COUNT = 30
+AVERAGE_EPISODES_COUNT = 50
 
 # size of replay buffer/memory
-REPLAY_BUFFER_CAPACITY = 100000
+REPLAY_BUFFER_CAPACITY = 50000
 
 # batch size for replay buffer
-BATCH_SIZE = 32
+BATCH_SIZE = 64
 
 # learning rates for actor-critic models
 CRITIC_LR = 0.001
@@ -94,7 +93,7 @@ GAMMA = 0.99
 TAU = 0.005 #0.005
 
 # scheduler for epsilon
-EXPLORE = 1000000
+EXPLORE = 10000
 
 # epsilon setting
 epsilon = 1
@@ -128,6 +127,8 @@ class CarlaEnvironment:
 
         # getting simplified parking map
         self.start_transform, self.spectator_transform, self.parking_map = self.get_parking_map(spawn_waypoint)
+
+        self.random_spawn()
 
         # all 8 radar readings - set to max value od 20 meters
         self.radar_readings = {
@@ -224,6 +225,96 @@ class CarlaEnvironment:
 
         return start_transform, spectator_transform, parking_map
 
+    def random_spawn(self, mode='carla_recommended'):
+
+        if mode =='carla_recommended': # spawn on random spawn point recommended by Carla authors
+
+            # corner coordinates of this rectangle taken from map Town05
+            x_min = -1
+            x_max = 36
+
+            y_min = -49
+            y_max = -10
+
+            yaw_min = -180
+            yaw_max = 180
+
+            spawn_points = self.map.get_spawn_points()
+
+            valid_spawn_points = []
+
+            for spawn_point in spawn_points:
+                x = spawn_point.location.x
+                y = spawn_point.location.y
+
+                if (x >= x_min and x <= x_max) and (y >= y_min and y <= y_max):
+                    valid_spawn_points.append(spawn_point)
+
+            spawn_location = (random.choice(valid_spawn_points)).location
+            spawn_x = spawn_location.x
+            spawn_y = spawn_location.y
+
+            # adding random offset to the selected spawn point
+            x_random_value = random.random()
+            x_random_offset = -2 + x_random_value*4
+
+            y_random_value = random.random()
+            y_random_offset = -2 + y_random_value*4
+
+            yaw_random_value = random.random()
+            yaw_random_spawn = yaw_min + yaw_random_value*(yaw_max-yaw_min)
+
+            spawn_transform = carla.Transform(carla.Location(x=(spawn_x + x_random_offset), y=(spawn_y + y_random_offset), z=self.spawning_z_offset), carla.Rotation(yaw=yaw_random_spawn))
+
+        elif mode == 'random_lane': # spawn on random position and orientation on the closest lane to the parking
+
+            # corner coordinates of this rectangle taken from map Town05
+            x_min = 23.5
+            x_max = 30
+
+            y_min = -44
+            y_max = -15
+
+            yaw_min = -180
+            yaw_max = 180
+
+            x_random_value = random.random()
+            x_random_spawn = x_min + x_random_value*(x_max-x_min)
+
+            y_random_value = random.random()
+            y_random_spawn = y_min + y_random_value*(y_max-y_min)
+
+            yaw_random_value = random.random()
+            yaw_random_spawn = yaw_min + yaw_random_value*(yaw_max-yaw_min)
+
+            spawn_transform = carla.Transform(carla.Location(x=x_random_spawn, y=y_random_spawn, z=self.spawning_z_offset), carla.Rotation(yaw=yaw_random_spawn))
+
+        elif mode == 'random_entrance': # spawn on random position and orientation on entrance of the parking
+
+            # corner coordinates of this rectangle taken from map Town05
+            x_min = 13
+            x_max = 29
+
+            y_min = -33
+            y_max = -27
+
+            yaw_min = -180
+            yaw_max = 180
+
+            x_random_value = random.random()
+            x_random_spawn = x_min + x_random_value*(x_max-x_min)
+
+            y_random_value = random.random()
+            y_random_spawn = y_min + y_random_value*(y_max-y_min)
+
+            yaw_random_value = random.random()
+            yaw_random_spawn = yaw_min + yaw_random_value*(yaw_max-yaw_min)
+
+            spawn_transform = carla.Transform(carla.Location(x=x_random_spawn, y=y_random_spawn, z=self.spawning_z_offset), carla.Rotation(yaw=yaw_random_spawn))
+
+        return spawn_transform
+
+
     # function for reseting environment and starting new episode
     def reset(self):
         self.collision_hist = []
@@ -232,13 +323,22 @@ class CarlaEnvironment:
         self.actor_list = []
  
         # spawning of our agent - Tesla Model 3 
-        # self.vehicle = self.world.spawn_actor(self.model_3, self.start_transform) 
-        self.vehicle = self.world.spawn_actor(self.model_3, self.start_transform)
-        self.actor_list.append(self.vehicle)
+        try:
+            # spawning on random point
+            # random_spawn_mode = random.choice(['random_lane', 'random_entrance', 'carla_recommended'])
+            random_spawn_mode = random.choice(['random_lane', 'random_entrance'])
+            spawn_point = self.random_spawn(random_spawn_mode)
+            self.vehicle = self.world.spawn_actor(self.model_3, spawn_point)
+            self.actor_list.append(self.vehicle)
+
+        except:
+            # spawning on selected start waypoint
+            self.vehicle = self.world.spawn_actor(self.model_3, self.start_transform)
+            self.actor_list.append(self.vehicle)
 
         # forcing our agent not to move for 5 seconds -> then we can apply some control
         self.vehicle.apply_control(carla.VehicleControl(throttle=0.0, brake=0.0))
-        time.sleep(0.5)
+        time.sleep(_SLEEP_TIME_)
 
         # spawning non-moving vehicles on left/right side of targeted parking spot
         if VEHICLES_ON_SIDE_AVAILABLE:
@@ -314,7 +414,7 @@ class CarlaEnvironment:
         # --------------------------------------------------------------------------------------
 
         # waiting a bit for spawning all sensors
-        time.sleep(0.5)
+        time.sleep(_SLEEP_TIME_)
 
         # starting episode
         self.episode_start = time.time()
@@ -339,8 +439,11 @@ class CarlaEnvironment:
         # numpy array with size (len(radar_data), 4) with values like --> [[vel, altitude, azimuth, depth],...[,,,]]:
         radar_points = np.frombuffer(radar_data.raw_data, dtype=np.dtype('f4')).reshape((len(radar_data), 4))
 
-        # getting only min depth
-        min_depth_radar_reading = min(np.reshape(radar_points[:,3],(len(radar_data),)))
+        if radar_points.shape[0] > 0:
+            # getting only min depth
+            min_depth_radar_reading = min(np.reshape(radar_points[:,3],(len(radar_data),)))
+        else:
+            min_depth_radar_reading = 20.0
 
         # load closest radar reading 
         self.radar_readings[key] = min_depth_radar_reading
@@ -373,13 +476,13 @@ class CarlaEnvironment:
         current_vehicle_acceleration = self.vehicle.get_acceleration()
 
         # defining states --> in this config (Akerman's drive) there is no vy, only vx and wz
-        x_rel = (self.parking_map['center'].location.x - current_vehicle_location.x)/40.0  
-        y_rel = (self.parking_map['center'].location.y - current_vehicle_location.y)/40.0
+        x_rel = (self.parking_map['center'].location.x - current_vehicle_location.x)/100.0  
+        y_rel = (self.parking_map['center'].location.y - current_vehicle_location.y)/100.0
         angle = (self.tranfsorm_angle(current_vehicle_rotation.yaw))/360
         vx = (current_vehicle_linear_velocity.x)/20.0  
         ax = (current_vehicle_acceleration.x)/10.0 
         wz = (current_vehicle_angular_velocity.z)/10.0   
-        distance_to_goal = (current_vehicle_location.distance(self.parking_map['center'].location))/40.0
+        distance_to_goal = (current_vehicle_location.distance(self.parking_map['center'].location))/100.0
 
         # definition of current state - concatenation of 8 radar readings and other values
         current_state = [radar_reading/20.0 for radar_reading in list(self.radar_readings.values())] + [x_rel, y_rel, angle, vx, ax, wz, distance_to_goal]
@@ -422,14 +525,14 @@ class CarlaEnvironment:
         self.vehicle.apply_control(carla.VehicleControl(throttle=throttle, steer=steer, reverse=reverse))
 
         # waiting some minor time, so that control can be properly applied
-        time.sleep(0.5)
+        time.sleep(_SLEEP_TIME_)
 
         # ---------------- REWARD CALCULATION ----------------
 
         # first, get new current state, because it is been changed due to applied control
         self.current_state, current_state_dict = self.get_current_state()
 
-        distance = current_state_dict['distance_to_goal']*40.0
+        distance = current_state_dict['distance_to_goal']*100.0
         angle = current_state_dict['angle']*360.0
 
         collisions_median = np.median(np.array(self.collision_hist))
@@ -448,31 +551,16 @@ class CarlaEnvironment:
         # if we are more MAX_DISTANCE meters away from the specified parking spot
         # then we are giving it some bad reward, and setting done to True 
         # for this episode, because vehicle is far away
+
             done = False # True
 
             # reward is negative distance to the goal
             reward = -distance
 
-        elif (self.episode_start + NON_MOVING_SECONDS) < time.time(): 
-        # potentially there could be problem if our agent feels like it is better
-        # for him not to move, then seconds per episode will be broken, and we have to
-        # penalize him for that... this could be wrapped with SECONDS_PER_EPISODE but because 
-        # then this condition would also break when episode finishes, it is now separated
-
-            loc = self.vehicle.get_transform().location
-            traveled_distance = self.start_transform.location.distance(loc)
-
-            if traveled_distance <= 2:
-                done = True
-                reward = -200
-            else:
-                done = False
-                reward = self.calculate_reward(distance, angle, mode='lin')
-
         else:
         # in every other situation reward will be calculated as proposed
             done = False
-            reward = self.calculate_reward(distance, angle, mode='lin')
+            reward = self.calculate_reward(distance, angle, mode='gauss')
 
         if ((self.episode_start + SECONDS_PER_EPISODE) < time.time()):
             # if we exceeded time limit for episode, we are breaking that episode
@@ -499,7 +587,11 @@ class CarlaEnvironment:
                 reward = (-1.0/(MAX_DISTANCE-d_val_1))*distance + MAX_DISTANCE/(MAX_DISTANCE-d_val_1)
             
             elif distance >= 0 and distance < d_val_1:
-                reward = (1-MAX_REWARD)*distance/float(d_val_1) + MAX_REWARD            
+                reward = (1-MAX_REWARD)*distance/float(d_val_1) + MAX_REWARD
+
+        elif mode == 'gauss':
+
+            reward = MAX_REWARD*np.exp(-distance**2/(2*SIGMA**2))        
         
         reward = reward * angle_penalty
 
@@ -545,12 +637,12 @@ class OUActionNoise:
     def reset(self):
         self.x_prev = self.x_initial if self.x_initial is not None else np.zeros_like(self.mu)
 
-    # function for sampling noise 
-    def sample_noise(self, x):
+    # # function for sampling noise 
+    # def sample_noise(self, x):
 
-        noise = self.theta * (self.mu - x) + self.sigma * np.random.normal(size=self.mu.shape)
+    #     noise = self.theta * (self.mu - x) + self.sigma * np.random.normal(size=self.mu.shape)
 
-        return noise
+    #     return noise
         
 # ---------------------------------------------------------------------------------------------------
 # DEEP DETERMINISTIC POLICY GRADIENT (DDPG) AGENT CLASS
@@ -662,11 +754,11 @@ class DDPGAgent:
         epsilon -= 1.0/EXPLORE
 
         # unpacking sampled actions
-        # throttle = float(sampled_actions[0] + max(epsilon, 0)*noise_throttle())
-        # steer = float(sampled_actions[1] + max(epsilon, 0)*noise_steer())
+        throttle = float(sampled_actions[0] + max(epsilon, 0)*noise_throttle())
+        steer = float(sampled_actions[1] + max(epsilon, 0)*noise_steer())
 
-        throttle = float(sampled_actions[0] + max(epsilon, 0)*noise_throttle.sample_noise(sampled_actions[0]))
-        steer = float(sampled_actions[1] + max(epsilon, 0)*noise_steer.sample_noise(sampled_actions[1]))
+        # throttle = float(sampled_actions[0] + max(epsilon, 0)*noise_throttle.sample_noise(sampled_actions[0]))
+        # steer = float(sampled_actions[1] + max(epsilon, 0)*noise_steer.sample_noise(sampled_actions[1]))
 
         if throttle > 1:
             throttle = 1
@@ -720,7 +812,6 @@ class ReplayBuffer:
         self.action_buffer = np.zeros((self.buffer_capacity, ACTIONS_SIZE))
         self.reward_buffer = np.zeros((self.buffer_capacity, 1))
         self.next_state_buffer = np.zeros((self.buffer_capacity, STATE_SIZE))
-        self.done_buffer = np.zeros((self.buffer_capacity, 1))
 
     # function for recording experience - it takes [s,a,r,s',d] obervation as input
     # [s,a,r,s',d] - stands for [state, action, reward for that action, new state, done]
@@ -734,7 +825,6 @@ class ReplayBuffer:
         self.action_buffer[index] = observation['actions']
         self.reward_buffer[index] = observation['reward']
         self.next_state_buffer[index] = observation['next_state']
-        self.done_buffer[index] = observation['done']
 
         self.buffer_counter += 1
 
@@ -800,9 +890,9 @@ def update_target(target_weights, actual_weights):
 if __name__ == '__main__':
 
     # seeding for more repetitive results
-    random.seed(1)
-    np.random.seed(2)
-    tf.random.set_seed(3)
+    random.seed(1414)
+    np.random.seed(2123)
+    tf.random.set_seed(32112)
 
     # memory fraction, mostly used when training multiple agents
     # GPU_options = tf.GPUOptions(per_process_gpu_memory_fraction=MEMORY_FRACTION)
@@ -826,8 +916,8 @@ if __name__ == '__main__':
         # loop for waiting for user response on which spawning point to spawn vehicle on start
         while(True):
 
-            # selected waypoint for start position
-            selected_waypoint = input('Select waypoint for starting position (e/i): ')
+            # selected waypoint for possible start position (if random spawn fails)
+            selected_waypoint = input('Select waypoint for possible starting position (e/i): ')
 
             if selected_waypoint == '':
                 continue
@@ -852,8 +942,8 @@ if __name__ == '__main__':
         agent = DDPGAgent()
 
         # Ornstein-Uhlenbeck noise objects
-        ou_noise_throttle = OUActionNoise(mu=0.4*np.ones(1), sigma=0.8*np.ones(1), theta=1.0)
-        ou_noise_steer = OUActionNoise(mu=np.zeros(1), sigma=0.1*np.ones(1), theta=0.2)
+        ou_noise_throttle = OUActionNoise(mu=0.5*np.ones(1), sigma=0.4*np.ones(1), theta=3.0)
+        ou_noise_steer = OUActionNoise(mu=1.0*np.zeros(1), sigma=0.3*np.ones(1), theta=0.5)
 
         ou_noise_dict = {
                           'throttle': ou_noise_throttle,
@@ -911,8 +1001,7 @@ if __name__ == '__main__':
                                 'previous_state': previous_state,
                                 'actions': actions_arr,
                                 'reward': reward,
-                                'next_state': next_state,
-                                'done': done
+                                'next_state': next_state
                               }
 
                 # writing down records from previous state to this new state
@@ -948,9 +1037,6 @@ if __name__ == '__main__':
             average_reward_list.append(average_reward)
 
         print('-----------------End of training process---------------')
-        
-        # if training proceeds correctly, the average episodic reward should increase with time.
-        # change learning rates, 'tau' valuee, and architectures for the Actor and Critic networks to get better results
 
         # saving models
         actor_model.save_weights('models/parking_agent_actor.h5')
@@ -975,7 +1061,6 @@ if __name__ == '__main__':
 
     # if program is stopped by any error or using Ctrl + C models are saved as terminated
     except :
-
         # saving manually stopped models
         actor_model.save_weights('models/parking_agent_actor_terminated.h5')
         critic_model.save_weights('models/parking_agent_critic_terminated.h5')
