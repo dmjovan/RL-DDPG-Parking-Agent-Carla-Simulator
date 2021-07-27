@@ -1,14 +1,6 @@
-# Program for tracking (gathering position info) SPECTATOR in Carla simulator 
-
-# goals of this program - running as independent script>
-# - getting coordinates of corners and orientation of goal parking spot in world coordinates
-# - getting coordinates of corners and orientation of 2 parking spots on left/right side of goal parking spot (if posible)
-# - getting coordinates and orientation of spectator camera, to be set in main script for proprior look while training
-# - getting starting coordinates and orientation of vehicle - 2 posible start position 
-#   therefore 2 output csv files:
-#                                 - parking_map_for_spawn_on_entrance.csv - spawn vehicle on entrance of parking
-#                                 - parking_map_for_spawn_on_intersection.csv - spawn vehicle on intersection near parking
-
+# ---------------------------------------------------------------------------------------------------
+# IMPORTING ALL NECESSARY LIBRARIES
+# ---------------------------------------------------------------------------------------------------
 import glob
 import os
 import sys
@@ -16,8 +8,11 @@ import time
 import numpy as np
 import pandas as pd
 
+# ---------------------------------------------------------------------------------------------------
+# IMPORTING CARLA SIMULATOR
+# ---------------------------------------------------------------------------------------------------
 try:
-    sys.path.append(glob.glob('../../carla/dist/carla-*%d.%d-%s.egg' % (
+    sys.path.append(glob.glob('../carla/dist/carla-*%d.%d-%s.egg' % (
         sys.version_info.major,
         sys.version_info.minor,
         'win-amd64' if os.name == 'nt' else 'linux-x86_64'))[0])
@@ -25,28 +20,26 @@ except IndexError:
     pass
 import carla	
 
+# ---------------------------------------------------------------------------------------------------
+# GLOBAL VARIABLES FOR CARLA AND ENVIRONMENT
+# ---------------------------------------------------------------------------------------------------
 _HOST_ = '127.0.0.1' 
 _PORT_ = 2000
-_SLEEP_TIME_ = 1 # s
+_SLEEP_TIME_ = 1 
 
-# path to the folder
-parking_csv_path = os.getcwd()
+FOLDER_PATH = os.getcwd()
 
-# dictionary for row names in csv file with keys that corespondes to the commands on the input
-# for defining spots while simulating
+# ------------------ DICTIONARY FOR ROW NAMES THAT CORESPONDES TO THE COMMANDS -----------------
 df_rows = {
 
-            # starting position - x and y coordinates and yaw angle
-			's' : 'start',
-
 			# corners of goal parking spot - x and y coordinates
-			'dl': 'down_left',
-			'dr': 'down_right',
-			'ul': 'upper_left',
-			'ur': 'upper_right',
+			'gdl': 'goal_down_left',
+			'gdr': 'goal_down_right',
+			'gul': 'goal_upper_left',
+			'gur': 'goal_upper_right',
 
 			# orientation of center of goal parking spot - angle in degrees
-			'co': 'center_orientation',
+			'go': 'goal_orientation',
 
 			# corners of parking spot on the left side of goal parking spot - x and y coordinates
 			'ldl': 'left_down_left',
@@ -55,7 +48,7 @@ df_rows = {
 			'lur': 'left_upper_right',
 
 			# orientation of center of parking spot on the left side of goal parking spot - angle in degrees
-			'lco': 'left_center_orientation',
+			'lo': 'left_orientation',
 
 			# corners of parking spot on the right side of goal parking spot - x and y coordinates
 			'rdl': 'right_down_left',
@@ -64,14 +57,15 @@ df_rows = {
 			'rur': 'right_upper_right',
 
 			# orientation of center of parking spot on the right side of goal parking spot - angle in degrees
-			'rco': 'right_center_orientation',
+			'ro': 'right_orientation',
 
 			# spectator row with all fields
 			'spec': 'spectator'
 
 		}
 
-# pandas DataFrame to be saved in csv file 
+# ------------------ CREATING PANDAS DATAFRAME FOR STORING VALUES ----------------------
+
 df_columns = ['x', 'y','z','yaw', 'pitch', 'roll']
 df_dtype = 'float32'
 df_index = list(df_rows.values())
@@ -83,25 +77,33 @@ df.index = df_index
 
 df.index.name = 'position'
 
-# function for storing/updating fields of data frame
 def update_field_in_data_frame(df_row, column = None, value = None):
 
-	global starting_waypoint
+	"""
+    Function for updating field value in Pandas DataFrame, or for storing that
+    Pandas DataFrame in .csv file.
+        
+    :params:
+        - df_row: dataFrame row (key in df_rows) for selecting row of field (if 'done', then storing DataFrame in .csv file conducted)
+        - column: dataFrame column name for selecting column of field 
+        - value: value to be written down in selected field
+
+    :return:
+        - done: boolean value, indicating if updating field or storing .csv file is done
+
+    """
 
 	done = False
 
 	if df_row == 'done':
-		df.to_csv(parking_csv_path + '/parking_map_for_spawn_on_' + starting_waypoint +'.csv')
+		df.to_csv(FOLDER_PATH + '/parking_map.csv')
 		done = True
 
 	elif df_row in df_rows.keys():
 
 		if column in ['yaw', 'pitch', 'roll']:
-
-			# return value of angle from 0 to 360 degrees
 			value = 360 + value if value < 0 else value
 
-		# updating field
 		df.at[df_rows[df_row], column] = value
 		done = True
 
@@ -110,49 +112,34 @@ def update_field_in_data_frame(df_row, column = None, value = None):
 		
 	return done
 
-# main program for obataining environment/getting charachteristic spots map
+# ---------------------------------------------------------------------------------------------------
+# MAIN PROGRAM
+# ---------------------------------------------------------------------------------------------------
+
+"""
+Program for tracking (gathering position info) SPECTATOR in Carla simulator 
+
+Goals of this program - running as independent script:
+- getting coordinates of corners and orientation of goal parking spot in world coordinates
+- getting coordinates of corners and orientation of 2 parking spots on left/right side of goal parking spot (if posible)
+- getting coordinates and orientation of spectator camera, to be set in main script for proprior look while training
+
+"""
 if __name__ == '__main__':
 
 	client = carla.Client(_HOST_, _PORT_)
 	client.set_timeout(10.0)
 	world = client.load_world('Town05')
 
-	# getting spectators transform
 	t = world.get_spectator().get_transform()
 
-	x = t.location.x
-	y = t.location.y
-	angle = t.rotation.yaw
-
-	starting_waypoint = ''
-	waypoint_selected = False
-
-	# loop for choosing the start position for for obtaining
+	# ------------------ LOOPING WHILE MOVING THROUGH ENVIRONMENT ----------------------
 	while(True):
 
-		# selected waypoint for start position
-		selected_waypoint = input('Select waypoint for starting position (e/i): ')
 
-		if selected_waypoint == '':
-			continue
+		# ------------------ ROW SELECTION THROUGH SHORT COMMANDS ----------------------
 
-		elif selected_waypoint == 'e':
-			starting_waypoint = 'entrance'
-			waypoint_selected = True
-
-		elif selected_waypoint == 'i':
-			starting_waypoint = 'intersection'
-			waypoint_selected = True
-
-		if waypoint_selected == True:
-			break
-
-		time.sleep(_SLEEP_TIME_)
-
-	# loop for catching and writing down coordinates
-	while(True):
-
-		row = input('Select row: ')
+		row = input('Select point: ')
 
 		if row == '':
 			continue
@@ -165,7 +152,8 @@ if __name__ == '__main__':
 				print('Error while saving csv file!')
 		else:
 
-			# getting spectator transform
+			# ------------------ GETTING DATA FROM ENVIRONMENT  ----------------------
+
 			t = world.get_spectator().get_transform()
 
 			x = t.location.x
@@ -177,6 +165,8 @@ if __name__ == '__main__':
 
 			# print(x, y, z, yaw, pitch, roll)
 
+			# ---------- UPDATING DATAFRAME'S SELECTED ROW  WITH GATHERED DATA FROM ENVIRONMENT -------------
+			
 			# updating all fields for one row of data frame
 			if not update_field_in_data_frame(row,'x', x):
 				print('Error while updating ['+ df_rows[row] +'][x] field in DataFrame!')

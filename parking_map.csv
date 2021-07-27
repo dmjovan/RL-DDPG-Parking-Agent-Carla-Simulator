@@ -1,0 +1,17 @@
+position,x,y,z,yaw,pitch,roll
+goal_down_left,12.4365,-22.9885,0,0,0,0
+goal_down_right,7.265,-23.016,0,0,0,0
+goal_upper_left,7.1195,-25.7212,0,0,0,0
+goal_upper_right,12.1415,-25.6392,0,0,0,0
+goal_orientation,,,,180,,
+left_down_left,,,,,,
+left_down_right,,,,,,
+left_upper_left,,,,,,
+left_upper_right,,,,,,
+left_orientation,,,,,,
+right_down_left,11.7902927,-25.81860733,0,0,0,0
+right_down_right,11.78421227,-28.64800072,0,0,0,0
+right_upper_left,7.19534349,-25.7300148,0,0,0,0
+right_upper_right,7.1626486,-28.5866527,0,0,0,0
+right_orientation,,,,180,,
+spectator,24.14976,-61.391391,15.461981,88.659782,-30.7956199,2.19E+00
