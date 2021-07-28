@@ -93,6 +93,8 @@ class CarlaEnvironment:
 
         self.world.get_spectator().set_transform(spectator_transform)
 
+        self.draw_goal()
+
         self.radar_readings = {
                                 'radar_0'  : 20.0,
                                 'radar_45' : 20.0,
@@ -183,6 +185,10 @@ class CarlaEnvironment:
 
         # --------------------------- PARKING MAP DICTIONARY ----------------------------------
         parking_map = { 
+                       'goal_down_left'     : carla.Location(x=goal_down_left_x, y=goal_down_left_y, z=0.2),
+                       'goal_upper_left'    : carla.Location(x=goal_upper_left_x, y=goal_upper_left_y, z=0.2),
+                       'goal_upper_right'   : carla.Location(x=goal_upper_right_x, y=goal_upper_right_y, z=0.2),
+                       'goal_down_right'    : carla.Location(x=goal_down_right_x, y=goal_down_right_y, z=0.2),
                        'goal_parking_spot'  : goal_parking_spot,
                        'left_parking_spot'  : left_parking_spot,
                        'right_parking_spot' : right_parking_spot
@@ -322,6 +328,38 @@ class CarlaEnvironment:
         spawn_transform = carla.Transform(carla.Location(x=x_random_spawn+x0, y=y_random_spawn+y0, z=self.spawning_z_offset), carla.Rotation(yaw=yaw_random_spawn))
 
         return spawn_transform
+
+    def draw_goal(self):
+
+        """
+        Function for drawing rectangle on goal parking spot.
+            
+        :params:
+            None
+
+        :return:
+            None
+
+        """
+
+        debug = self.world.debug
+
+        begin_1 = self.parking_map['goal_down_left']
+        end_1 = self.parking_map['goal_upper_left']
+
+        begin_2 = self.parking_map['goal_upper_left']
+        end_2 = self.parking_map['goal_upper_right']
+
+        begin_3 = self.parking_map['goal_upper_right']
+        end_3 = self.parking_map['goal_down_right']
+
+        begin_4 = self.parking_map['goal_down_right']
+        end_4 = self.parking_map['goal_down_left']
+
+        debug.draw_line(begin_1, end_1, thickness=0.2, color=carla.Color(255,0,0), life_time=0)
+        debug.draw_line(begin_2, end_2, thickness=0.2, color=carla.Color(255,0,0), life_time=0)
+        debug.draw_line(begin_3, end_3, thickness=0.2, color=carla.Color(255,0,0), life_time=0)
+        debug.draw_line(begin_4, end_4, thickness=0.2, color=carla.Color(255,0,0), life_time=0)
 
     def reset(self):
 
@@ -610,7 +648,8 @@ class CarlaEnvironment:
     def calculate_reward(self, distance, angle, d_val_1=5, mode='exp'):
 
         """
-        Function for regular calculating current reward for just taken actions.
+        Function for regular calculating current reward for just taken actions. Check for provided
+        reward functions analysis in reward_construcion folder.
             
         :params:
             - distance: Euclidean distance from current agent's position to the center of goal parking spot
