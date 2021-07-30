@@ -51,21 +51,23 @@ SIGMA = 6.0
 # ---------------------------------------------------------------------------------------------------
 LOAD_MODEL_WEIGHTS_ENABLED = False
 
-TOTAL_EPISODES = 2000
-SECONDS_PER_EPISODE = 100
-AVERAGE_EPISODES_COUNT = 50
+MEMORY_FRACTION = 0.3333
 
-REPLAY_BUFFER_CAPACITY = 10000
-BATCH_SIZE = 128
+TOTAL_EPISODES = 5000
+STEPS_PER_EPISODE = 1000
+AVERAGE_EPISODES_COUNT = 40
+
+REPLAY_BUFFER_CAPACITY = 100000
+BATCH_SIZE = 64
 
 CRITIC_LR = 0.001
 ACTOR_LR = 0.0001
 GAMMA = 0.99
-TAU = 0.005
+TAU = 0.001
 
 epsilon = 1
-EPSILON_DECAY = 0.9995 
-MIN_EPSILON = 0.0001
+EXPLORE = 100000.0
+MIN_EPSILON = 0.000001
 
 # ---------------------------------------------------------------------------------------------------
 # CARLA ENVIRONMENT CLASS
@@ -96,14 +98,14 @@ class CarlaEnvironment:
         self.draw_goal()
 
         self.radar_readings = {
-                                'radar_0'  : 20.0,
-                                'radar_45' : 20.0,
-                                'radar_90' : 20.0,
-                                'radar_135': 20.0,
-                                'radar_180': 20.0,
-                                'radar_225': 20.0,
-                                'radar_270': 20.0, 
-                                'radar_315': 20.0 
+                                'radar_0'  : 100.0,
+                                'radar_45' : 100.0,
+                                'radar_90' : 100.0,
+                                'radar_135': 100.0,
+                                'radar_180': 100.0,
+                                'radar_225': 100.0,
+                                'radar_270': 100.0, 
+                                'radar_315': 100.0 
                                }
 
     def get_parking_map(self):
@@ -383,10 +385,15 @@ class CarlaEnvironment:
         # ------------------------------ SPAWNING AGENT ----------------------------------
 
         # random_spawn_mode = random.choice(['random_lane', 'random_entrance', 'carla_recommended'])
-        random_spawn_mode = random.choice(['random_lane', 'random_entrance'])
-        spawn_point = self.random_spawn(random_spawn_mode)
+        # random_spawn_mode = random.choice(['random_lane', 'random_entrance'])
+        # spawn_point = self.random_spawn(random_spawn_mode)
+
+        spawn_point = carla.Transform(carla.Location(x=17.2, y=-29.7, z=self.spawning_z_offset), carla.Rotation(yaw=180.0))
+
         self.vehicle = self.world.spawn_actor(self.model_3, spawn_point)
         self.actor_list.append(self.vehicle)
+
+        self.starting_distance_from_goal = self.vehicle.get_transform().location.distance(self.parking_map['goal_parking_spot'].location)
 
         self.vehicle.apply_control(carla.VehicleControl(throttle=0.0, brake=0.0))
         time.sleep(_SLEEP_TIME_)
@@ -500,7 +507,7 @@ class CarlaEnvironment:
         if radar_points.shape[0] > 0:
             min_depth_radar_reading = min(np.reshape(radar_points[:,3],(len(radar_data),)))
         else:
-            min_depth_radar_reading = 20.0
+            min_depth_radar_reading = 100.0
 
         self.radar_readings[key] = min_depth_radar_reading
 
@@ -529,7 +536,7 @@ class CarlaEnvironment:
             None
 
         :return:
-            - current_state: numpy array with shape (STATE_SIZE, ) containing all normalized sensor readings:
+            - current_state: numpy array with shape (STATE_SIZE, ) containing all sensor readings:
                              - 8 radar readings:  min depth of radar readings from 8 different positions on vehicle
                              - x_rel: difference of x coordinate center of goal parking spot and of center of vehicle in global coordinates (relative x)
                              - y_rel: difference of y coordinate center of goal parking spot and of center of vehicle in global coordinates (relative y)
@@ -555,15 +562,15 @@ class CarlaEnvironment:
         current_vehicle_angular_velocity = self.vehicle.get_angular_velocity().z
         current_vehicle_acceleration = self.vehicle.get_acceleration().x
 
-        x_rel = (self.parking_map['goal_parking_spot'].location.x - current_vehicle_x)/100.0  
-        y_rel = (self.parking_map['goal_parking_spot'].location.y - current_vehicle_y)/100.0
-        angle = self.transform_angle(angle)/360
-        vx = current_vehicle_linear_velocity/20.0  
-        ax = current_vehicle_acceleration/10.0 
-        wz = current_vehicle_angular_velocity/10.0   
-        distance_to_goal = (current_vehicle_location.distance(self.parking_map['goal_parking_spot'].location))/100.0
+        x_rel = self.parking_map['goal_parking_spot'].location.x - current_vehicle_x
+        y_rel = self.parking_map['goal_parking_spot'].location.y - current_vehicle_y
+        angle = self.transform_angle(angle)
+        vx = current_vehicle_linear_velocity 
+        ax = current_vehicle_acceleration
+        wz = current_vehicle_angular_velocity  
+        distance_to_goal = current_vehicle_location.distance(self.parking_map['goal_parking_spot'].location)
 
-        current_state = [radar_reading/20.0 for radar_reading in list(self.radar_readings.values())] + [x_rel, y_rel, angle, vx, ax, wz, distance_to_goal]
+        current_state = list(self.radar_readings.values()) + [x_rel, y_rel, angle, vx, ax, wz, distance_to_goal]
 
         # -------------------------- PACKING CURRENT STATE IN DICTIONARY AND ARRAY ------------------------------
         sensor_values_dict = {
@@ -614,8 +621,8 @@ class CarlaEnvironment:
 
         current_state, current_state_dict = self.get_current_state()
 
-        distance = current_state_dict['distance_to_goal']*100.0
-        angle = current_state_dict['angle']*360.0
+        distance = current_state_dict['distance_to_goal']
+        angle = current_state_dict['angle']
 
         collisions_median = np.median(np.array(self.collision_hist))
 
@@ -626,22 +633,18 @@ class CarlaEnvironment:
             reward = -collisions_median
             self.last_collisions_median = collisions_median
 
-            if collisions_median >= 1000:
+            if collisions_median >= 50:
                 done = True
 
         elif distance > MAX_DISTANCE:
             done = False 
             reward = -distance
 
-            if distance > 2*MAX_DISTANCE:
+            if distance > 1.2*MAX_DISTANCE:
                 done = True
-
         else:
             done = False
             reward = self.calculate_reward(distance, angle, mode='gauss')
-
-        if ((self.episode_start + SECONDS_PER_EPISODE) < time.time()):
-            done = True
 
         return current_state, reward, done
 
@@ -746,6 +749,22 @@ class OUActionNoise:
 
         """
         self.x_prev = self.x_initial if self.x_initial is not None else np.zeros_like(self.mu)
+
+    def sample_noise(self, x):
+        
+        """
+        Function for sampling Ornstein-Uhlenbeck noise with previously defined parameters.
+
+        :params:
+            - x: current action value
+
+        :return:
+            - noise: Ornstein-Uhlenbeck noise sampe
+
+        """
+        noise = self.theta * (self.mu - x) + self.sigma * np.random.randn(1)
+
+        return noise
         
 # ---------------------------------------------------------------------------------------------------
 # DEEP DETERMINISTIC POLICY GRADIENT (DDPG) AGENT CLASS
@@ -761,7 +780,7 @@ class DDPGAgent:
     def __init__(self):
         pass
 
-    def get_actor(self, model_name='', terminated = False):
+    def get_actor(self, model_name='', terminated = False, show_summary = False):
 
         """
         Function for getting actor model.
@@ -769,6 +788,7 @@ class DDPGAgent:
         :params:
             - model_name: string (either '', either '_target'), indicating if it is about classic or target model 
             - terminated: boolean value, indicating if we have to load weights from models stored as terminated 
+            - show_summary: boolean value for printing mode summary
 
         :return:
             - model: model/neural network constructed or loaded from previously stored model
@@ -782,16 +802,17 @@ class DDPGAgent:
 
         last_init = tf.random_uniform_initializer(minval=-0.003, maxval=0.003)
 
-        inputs = layers.Input(shape=(STATE_SIZE,))
-        out = layers.Dense(300, activation='relu')(inputs)
-        out = layers.Dense(600, activation='relu')(out)
-        throttle_action = layers.Dense(1, activation='sigmoid', kernel_initializer=last_init)(out)
-        steer_action = layers.Dense(1, activation='tanh', kernel_initializer=last_init)(out)
-        outputs = layers.Concatenate()([throttle_action, steer_action])
+        inputs = layers.Input(shape=(STATE_SIZE))
+        normalized_inputs = layers.BatchNormalization()(inputs)
+        out1 = layers.Dense(256, activation='relu')(normalized_inputs)
+        out2 = layers.Dense(256, activation='relu')(out1)
+        # throttle_action = layers.Dense(1, activation='sigmoid', kernel_initializer=last_init)(out2)
+        # steer_action = layers.Dense(1, activation='tanh', kernel_initializer=last_init)(out2)
+        # outputs = layers.Concatenate()([throttle_action, steer_action])
 
-        # outputs = layers.Dense(2, activation='tanh', kernel_initializer=last_init)(out)
+        outputs = layers.Dense(2, activation='tanh', kernel_initializer=last_init)(out2)
 
-        model = tf.keras.Model(inputs, outputs)
+        model = tf.keras.Model(inputs, outputs, name = 'Target_Actor_Model' if model_name=='_target' else 'Actor_Model')
 
         # ----------------------- LOADING STORED WEIGHTS IF ENABLED ----------------------------
 
@@ -801,9 +822,12 @@ class DDPGAgent:
         elif model_name == '_target':
             model.set_weights(actor_model.get_weights())
 
+        if show_summary:
+            print(model.summary())
+
         return model
 
-    def get_critic(self, model_name='', terminated = False):
+    def get_critic(self, model_name='', terminated = False, show_summary = False):
 
         """
         Function for getting critic model.
@@ -811,6 +835,7 @@ class DDPGAgent:
         :params:
             - model_name: string (either '', either '_target'), indicating if it is about classic or target model 
             - terminated: boolean value, indicating if we have to load weights from models stored as terminated 
+            - show_summary: boolean value for printing mode summary
 
         :return:
             - model: model/neural network constructed or loaded from previously stored model
@@ -822,18 +847,20 @@ class DDPGAgent:
 
         # ----------------------- CONSTRUCTING CRITIC MODEL ----------------------------
 
-        state_input = layers.Input(shape=(STATE_SIZE,))
-        state_out = layers.Dense(100, activation='relu')(state_input)
-        state_out = layers.Dense(200, activation='relu')(state_out)
+        state_input = layers.Input(shape=(STATE_SIZE))
+        normalized_state_inputs = layers.BatchNormalization()(state_input)
+        state_out1 = layers.Dense(64, activation='relu')(normalized_state_inputs)
+        state_out2 = layers.Dense(128, activation='relu')(state_out1)
 
-        action_input = layers.Input(shape=(ACTIONS_SIZE,))
-        action_out = layers.Dense(200, activation='relu')(action_input)
+        action_input = layers.Input(shape=(ACTIONS_SIZE))
+        normalized_action_inputs = layers.BatchNormalization()(action_input)
+        action_out1 = layers.Dense(128, activation='relu')(normalized_action_inputs)
 
-        concat = layers.Concatenate()([state_out, action_out])
-        out = layers.Dense(300, activation='relu')(concat)
-        out = layers.Dense(600, activation='relu')(out)
-        outputs = layers.Dense(1)(out)
-        model = tf.keras.Model([state_input, action_input], outputs)
+        concat = layers.Concatenate()([state_out2, action_out1])
+        out1 = layers.Dense(512, activation='relu')(concat)
+        out2 = layers.Dense(512, activation='relu')(out1)
+        outputs = layers.Dense(1)(out2)
+        model = tf.keras.Model([state_input, action_input], outputs, name = 'Target_Critic_Model' if model_name=='_target' else 'Critic_Model')
        
         # ----------------------- LOADING STORED WEIGHTS IF ENABLED ----------------------------
 
@@ -842,6 +869,9 @@ class DDPGAgent:
 
         elif model_name == '_target':
             model.set_weights(critic_model.get_weights())
+
+        if show_summary:
+            print(model.summary())
 
         return model
 
@@ -874,10 +904,13 @@ class DDPGAgent:
         sampled_actions = tf.squeeze(actor_model(state))
         sampled_actions = sampled_actions.numpy()
 
-        epsilon *= EPSILON_DECAY
+        epsilon -= 1.0/EXPLORE
 
         throttle = float(sampled_actions[0] + max(epsilon, MIN_EPSILON)*noise_throttle())
         steer = float(sampled_actions[1] + max(epsilon, MIN_EPSILON)*noise_steer())
+
+        # throttle = float(sampled_actions[0] + max(epsilon, MIN_EPSILON)*noise_throttle.sample_noise(sampled_actions[0]))
+        # steer = float(sampled_actions[1] + max(epsilon, MIN_EPSILON)*noise_steer.sample_noise(sampled_actions[1]))  
 
         if throttle > 1:
             throttle = 1
@@ -904,7 +937,7 @@ class DDPGAgent:
 # ---------------------------------------------------------------------------------------------------
 class ReplayBuffer:
 
-    def __init__(self, buffer_capacity=10000, batch_size=64):
+    def __init__(self, buffer_capacity=100000, batch_size=64):
 
         """
         Constructor of ReplayBuffer class.
@@ -1066,13 +1099,14 @@ def update_target(target_weights, actual_weights):
 # ---------------------------------------------------------------------------------------------------
 if __name__ == '__main__':
 
-    random.seed(1)
-    np.random.seed(1)
-    tf.random.set_seed(1)
+    random.seed(12453)
+    np.random.seed(553)
+    tf.random.set_seed(312)
 
-    # memory fraction, mostly used when training multiple agents
-    # GPU_options = tf.GPUOptions(per_process_gpu_memory_fraction=MEMORY_FRACTION)
-    # set_session(tf.Session(config=tf.ConfigProto(gpu_options=GPU_options)))
+    # ----------------------- GPU ACCELERATION SETTINGS ----------------------------
+    config = tf.compat.v1.ConfigProto()
+    config.gpu_options.per_process_gpu_memory_fraction = MEMORY_FRACTION
+    session = tf.compat.v1.InteractiveSession(config=config)
 
     # ----------------------- CREATING NECESSARY FOLDERS ----------------------------
     if not os.path.isdir('models'):
@@ -1088,8 +1122,8 @@ if __name__ == '__main__':
         env = CarlaEnvironment()
         agent = DDPGAgent()
 
-        ou_noise_throttle = OUActionNoise(mu=0.5*np.ones(1), sigma=0.4*np.ones(1), theta=3.0)
-        ou_noise_steer = OUActionNoise(mu=np.zeros(1), sigma=0.3*np.ones(1), theta=0.5)
+        ou_noise_throttle = OUActionNoise(mu=np.zeros(1), sigma=0.4*np.ones(1))
+        ou_noise_steer = OUActionNoise(mu=np.zeros(1), sigma=0.3*np.ones(1))
 
         ou_noise_dict = {
                           'throttle': ou_noise_throttle,
@@ -1122,7 +1156,7 @@ if __name__ == '__main__':
             episodic_reward = 0
 
             # ----------------- ITERATING IN ONE EPISODE ---------------------
-            while True:
+            for step in range(STEPS_PER_EPISODE):
 
                 # ----------------- SAMPLING AND APPLYING ACTIONS, TAKING OBSERVATIONS ---------------------
 
@@ -1130,8 +1164,6 @@ if __name__ == '__main__':
 
                 actions_arr, actions_dict = agent.policy(tf_state, ou_noise_dict)
                 next_state, reward, done = env.step(actions_dict)
-
-                print('Throttle: {:.3f}, Steer: {:.3f} ---> Reward: {:.3f}'.format(actions_dict['throttle'], actions_dict['steer'], reward))
 
                 observation = {
                                 'state': state,
@@ -1153,6 +1185,7 @@ if __name__ == '__main__':
                 update_target(target_actor.variables, actor_model.variables)
                 update_target(target_critic.variables, critic_model.variables)
 
+                print('Current step: %d/%d' %(step, STEPS_PER_EPISODE), end='\r')
 
                 # ------------ EPISODE TERMINATION / TRANSITION -------------
                 if done:
@@ -1165,11 +1198,10 @@ if __name__ == '__main__':
             # ----------------------- STORING REWARDS ----------------------------
 
             episode_reward_list.append(episodic_reward)
-
-            print('Episode * {} * Episodic Reward is ==> {}'.format(episode, episodic_reward))
-
             average_reward = np.mean(episode_reward_list[-AVERAGE_EPISODES_COUNT:])
             average_reward_list.append(average_reward)
+
+            print('Episode * {} * Episodic Reward is ==> {}'.format(episode, episodic_reward))            
 
         print('-----------------End of training process---------------')
 
@@ -1178,8 +1210,8 @@ if __name__ == '__main__':
         actor_model.save_weights('models/parking_agent_actor.h5')
         critic_model.save_weights('models/parking_agent_critic.h5')
 
-        target_actor.save_weights('models/parking_agent_actor_target.h5')
-        target_critic.save_weights('models/parking_agent_critic_target.h5')
+        target_actor.save_weights('models/parking_agent_target_actor.h5')
+        target_critic.save_weights('models/parking_agent_target_critic.h5')
 
         now = datetime.now()
         date_time_string = now.strftime('%d-%m-%Y_%H-%M-%S')
@@ -1187,8 +1219,8 @@ if __name__ == '__main__':
         # ----------------------- PLOTTING REWARDS ----------------------------
 
         plt.figure(figsize = (10,10), dpi = 100)
-        plt.plot(np.arange(1,TOTAL_EPISODES+1), episode_reward_list, color='red', linewidth=1.2, label='episodic')
-        plt.plot(np.arange(1,TOTAL_EPISODES+1), average_reward_list, color='green', linewidth=1.2, label='average episodic')
+        plt.plot(np.arange(1,TOTAL_EPISODES+1), episode_reward_list, color='red', linewidth=1.0, label='episodic')
+        plt.plot(np.arange(1,TOTAL_EPISODES+1), average_reward_list, color='green', linewidth=1.5, label='average episodic')
         plt.xlabel('Episode')
         plt.ylabel('Rt')
         plt.grid()
@@ -1198,14 +1230,14 @@ if __name__ == '__main__':
 
     # ----------------------- CATCHING EXCEPTIONS DURING TRAINING ----------------------------
     except :
-
+    
         # ----------------------- SAVING TERMINATED MODELS ----------------------------.
 
         actor_model.save_weights('models/parking_agent_actor_terminated.h5')
         critic_model.save_weights('models/parking_agent_critic_terminated.h5')
 
-        target_actor.save_weights('models/parking_agent_actor_target_terminated.h5')
-        target_critic.save_weights('models/parking_agent_critic_target_terminated.h5')
+        target_actor.save_weights('models/parking_agent_target_actor_terminated.h5')
+        target_critic.save_weights('models/parking_agent_target_critic_terminated.h5')
 
         now = datetime.now()
         date_time_string = now.strftime('%d-%m-%Y_%H-%M-%S')
@@ -1213,8 +1245,8 @@ if __name__ == '__main__':
         # ----------------------- PLOTTING REWARDS OF TERMINATED LEARNING PROCESS ----------------------------
 
         plt.figure(figsize = (10,10), dpi = 100)
-        plt.plot(np.arange(1, len(episode_reward_list)+1), episode_reward_list, color='red', linewidth=1.2, label='episodic')
-        plt.plot(np.arange(1, len(average_reward_list)+1), average_reward_list, color='green', linewidth=1.2, label='average episodic')
+        plt.plot(np.arange(1, len(episode_reward_list)+1), episode_reward_list, color='red', linewidth=1.0, label='episodic')
+        plt.plot(np.arange(1, len(average_reward_list)+1), average_reward_list, color='green', linewidth=1.5, label='average episodic')
         plt.xlabel('Episode')
         plt.ylabel('Rt')
         plt.grid()

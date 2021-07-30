@@ -1,8 +1,8 @@
 position,x,y,z,yaw,pitch,roll
-goal_down_left,12.2,-23,0,0,0,0
-goal_down_right,12.2,-25.7,0,0,0,0
-goal_upper_left,7.2,-23,0,0,0,0
-goal_upper_right,7.2,-25.7,0,0,0,0
+goal_down_left,6,-28.6,0,0,0,0
+goal_down_right,6,-31.3,0,0,0,0
+goal_upper_left,1,-28.6,0,0,0,0
+goal_upper_right,1,-31.3,0,0,0,0
 goal_orientation,,,,180,,
 left_down_left,,,,,,
 left_down_right,,,,,,
@@ -15,3 +15,18 @@ right_upper_left,7.19534349,-25.7300148,0,0,0,0
 right_upper_right,7.1626486,-28.5866527,0,0,0,0
 right_orientation,,,,180,,
 spectator,14.24364,-53.79738,27.482666,77.845474,307.957016,1.11E-05
+,,,,,,
+,,,,,,
+,,,,,,
+,real,,,center,,
+,12.2,-23,,12.3,-28.5,
+,12.2,-25.7,,12.3,-31.2,
+,7.2,-23,,7.2,-28.5,
+,7.2,-25.7,,7.2,-31.2,
+,,,,,,
+,,,,,,
+,center moved,,,,,
+,6,-28.6,,,,
+,6,-31.3,,,,
+,1,-28.6,,,,
+,1,-31.3,,,,
