@@ -42,6 +42,7 @@ VEHICLES_ON_SIDE_AVAILABLE = False
 ACTIONS_SIZE = 2
 STATE_SIZE = 15
 
+MAX_COLLISION_IMPULSE = 50
 MAX_DISTANCE = 25
 MAX_REWARD = 20
 SIGMA = 6.0
@@ -49,7 +50,7 @@ SIGMA = 6.0
 # ---------------------------------------------------------------------------------------------------
 # GLOBAL VARIABLES FOR TRAINING 
 # ---------------------------------------------------------------------------------------------------
-LOAD_MODEL_WEIGHTS_ENABLED = False
+LOAD_MODEL_WEIGHTS_ENABLED = True # False
 
 MEMORY_FRACTION = 0.3333
 
@@ -633,7 +634,7 @@ class CarlaEnvironment:
             reward = -collisions_median
             self.last_collisions_median = collisions_median
 
-            if collisions_median >= 50:
+            if collisions_median >= MAX_COLLISION_IMPULSE:
                 done = True
 
         elif distance > MAX_DISTANCE:
@@ -658,13 +659,14 @@ class CarlaEnvironment:
             - distance: Euclidean distance from current agent's position to the center of goal parking spot
             - angle: current agent's global yaw angle
             - d_val_1: distance (in meters) where reward function is crossing 1 (for 'exp' and 'lin' mode)
-            - mode: currently 3 modes:
+            - mode: currently 4 modes:
                     - exp: exponential-like reward function, with values in range [0,1] for distance in range [MAX_DISTANCE, d_val_1],
                            and values higher than 1 for distance in range [0, d_val_1]
                     - lin: part-by-part linear reward function, with values in range [0,1] for distance in range [MAX_DISTANCE, d_val_1],
                            and values higher than 1 for distance in range [0, d_val_1]
                     - gauss: Gaussian-like reward function with hyperparameter SIGMA, centered over mean value which is 0.0, because of
                              maximum of this function in distance = 0
+                    - rec: reciprocal reward function of distance
 
         :return:
             - reward: calculated reward value for taken actions
@@ -689,6 +691,12 @@ class CarlaEnvironment:
 
         elif mode == 'gauss':
             reward = MAX_REWARD*np.exp(-distance**2/(2*SIGMA**2))        
+
+        elif mode == 'rec':
+            if distance <= 0.001:
+                distance = 0.001
+
+            reward = 1.0/distance   
         
         reward = reward * angle_penalty
 
@@ -749,22 +757,6 @@ class OUActionNoise:
 
         """
         self.x_prev = self.x_initial if self.x_initial is not None else np.zeros_like(self.mu)
-
-    def sample_noise(self, x):
-        
-        """
-        Function for sampling Ornstein-Uhlenbeck noise with previously defined parameters.
-
-        :params:
-            - x: current action value
-
-        :return:
-            - noise: Ornstein-Uhlenbeck noise sampe
-
-        """
-        noise = self.theta * (self.mu - x) + self.sigma * np.random.randn(1)
-
-        return noise
         
 # ---------------------------------------------------------------------------------------------------
 # DEEP DETERMINISTIC POLICY GRADIENT (DDPG) AGENT CLASS
@@ -892,7 +884,7 @@ class DDPGAgent:
 
         """
 
-        global epsilon
+        global epsilon, training_indicator
 
         # ----------------------- SAMPLING ORNSTEIN-UHLENBECK NOISE ----------------------------
 
@@ -904,13 +896,10 @@ class DDPGAgent:
         sampled_actions = tf.squeeze(actor_model(state))
         sampled_actions = sampled_actions.numpy()
 
-        epsilon -= 1.0/EXPLORE
+        epsilon -= 1.0/EXPLORE 
 
-        throttle = float(sampled_actions[0] + max(epsilon, MIN_EPSILON)*noise_throttle())
-        steer = float(sampled_actions[1] + max(epsilon, MIN_EPSILON)*noise_steer())
-
-        # throttle = float(sampled_actions[0] + max(epsilon, MIN_EPSILON)*noise_throttle.sample_noise(sampled_actions[0]))
-        # steer = float(sampled_actions[1] + max(epsilon, MIN_EPSILON)*noise_steer.sample_noise(sampled_actions[1]))  
+        throttle = float(sampled_actions[0] + float(training_indicator)*max(epsilon, MIN_EPSILON)*noise_throttle())
+        steer = float(sampled_actions[1] + float(training_indicator)*max(epsilon, MIN_EPSILON)*noise_steer())
 
         if throttle > 1:
             throttle = 1
@@ -1116,6 +1105,11 @@ if __name__ == '__main__':
     if not os.path.isdir('training_images'):
         os.makedirs('training_images')
 
+
+    # ---------------------- SELECTING PURPOSE OF PROGRAM ----------------------
+
+    training_indicator = int(input('Select one option: \n \tPlay with trained (press 0)\n \tTraining (press 1)\n \tYour answer: '))
+
     try: 
 
         # ------------ CREATING ENVIRONMENT, AGENT AND NOISE OBJECTS ----------------
@@ -1148,7 +1142,10 @@ if __name__ == '__main__':
         episode_reward_list = []
         average_reward_list = []
 
-        print('-----------------Start of training process---------------')
+        if training_indicator == 1:
+            print('-----------------Start of training process---------------')
+        else:
+            print('-----------------Start---------------')
 
         for episode in range(1,TOTAL_EPISODES+1):
 
@@ -1179,11 +1176,14 @@ if __name__ == '__main__':
                 episodic_reward += reward
 
                 # ----------------------- LEARNING PROCESS ----------------------------
-                replay_buffer.learn()
+                if training_indicator == 1:
+                    
+                    replay_buffer.learn()
 
-                # -------------------- UPDATING TARGET MODELS -------------------------
-                update_target(target_actor.variables, actor_model.variables)
-                update_target(target_critic.variables, critic_model.variables)
+                    # -------------------- UPDATING TARGET MODELS -------------------------
+                    update_target(target_actor.variables, actor_model.variables)
+                    update_target(target_critic.variables, critic_model.variables)
+
 
                 print('Current step: %d/%d' %(step, STEPS_PER_EPISODE), end='\r')
 
@@ -1203,7 +1203,10 @@ if __name__ == '__main__':
 
             print('Episode * {} * Episodic Reward is ==> {}'.format(episode, episodic_reward))            
 
-        print('-----------------End of training process---------------')
+        if training_indicator == 1:
+            print('-----------------End of training process---------------')
+        else:
+            print('-----------------End---------------')
 
         # ----------------------- SAVING MODELS ----------------------------
 
@@ -1230,26 +1233,31 @@ if __name__ == '__main__':
 
     # ----------------------- CATCHING EXCEPTIONS DURING TRAINING ----------------------------
     except :
-    
-        # ----------------------- SAVING TERMINATED MODELS ----------------------------.
+        
+        if training_indicator == 1:
 
-        actor_model.save_weights('models/parking_agent_actor_terminated.h5')
-        critic_model.save_weights('models/parking_agent_critic_terminated.h5')
+            # ----------------------- SAVING TERMINATED MODELS ----------------------------.
 
-        target_actor.save_weights('models/parking_agent_target_actor_terminated.h5')
-        target_critic.save_weights('models/parking_agent_target_critic_terminated.h5')
+            actor_model.save_weights('models/parking_agent_actor_terminated.h5')
+            critic_model.save_weights('models/parking_agent_critic_terminated.h5')
 
-        now = datetime.now()
-        date_time_string = now.strftime('%d-%m-%Y_%H-%M-%S')
+            target_actor.save_weights('models/parking_agent_target_actor_terminated.h5')
+            target_critic.save_weights('models/parking_agent_target_critic_terminated.h5')
 
-        # ----------------------- PLOTTING REWARDS OF TERMINATED LEARNING PROCESS ----------------------------
+            now = datetime.now()
+            date_time_string = now.strftime('%d-%m-%Y_%H-%M-%S')
 
-        plt.figure(figsize = (10,10), dpi = 100)
-        plt.plot(np.arange(1, len(episode_reward_list)+1), episode_reward_list, color='red', linewidth=1.0, label='episodic')
-        plt.plot(np.arange(1, len(average_reward_list)+1), average_reward_list, color='green', linewidth=1.5, label='average episodic')
-        plt.xlabel('Episode')
-        plt.ylabel('Rt')
-        plt.grid()
-        plt.title('Episodic and Average Episodic Reward \n (averaged over every last {} episodes) \n --- terminated at episode {}/{} ---'.format(AVERAGE_EPISODES_COUNT, episode-1, TOTAL_EPISODES))
-        plt.legend(loc='upper right')
-        plt.savefig(FOLDER_PATH + '/training_images/training_rewards_terminated_'+ date_time_string +'.png')
+            # ----------------------- PLOTTING REWARDS OF TERMINATED LEARNING PROCESS ----------------------------
+
+            plt.figure(figsize = (10,10), dpi = 100)
+            plt.plot(np.arange(1, len(episode_reward_list)+1), episode_reward_list, color='red', linewidth=1.0, label='episodic')
+            plt.plot(np.arange(1, len(average_reward_list)+1), average_reward_list, color='green', linewidth=1.5, label='average episodic')
+            plt.xlabel('Episode')
+            plt.ylabel('Rt')
+            plt.grid()
+            plt.title('Episodic and Average Episodic Reward \n (averaged over every last {} episodes) \n --- terminated at episode {}/{} ---'.format(AVERAGE_EPISODES_COUNT, episode-1, TOTAL_EPISODES))
+            plt.legend(loc='upper right')
+            plt.savefig(FOLDER_PATH + '/training_images/training_rewards_terminated_'+ date_time_string +'.png')
+
+        else:
+            pass
