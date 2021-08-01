@@ -40,23 +40,25 @@ MAP_CSV_PATH = FOLDER_PATH + '/parking_map.csv'
 VEHICLES_ON_SIDE_AVAILABLE = False
 
 ACTIONS_SIZE = 2
-STATE_SIZE = 15
+STATE_SIZE = 16
 
 MAX_COLLISION_IMPULSE = 50
-MAX_DISTANCE = 25
-MAX_REWARD = 20
-SIGMA = 6.0
+MAX_DISTANCE = 20
+MAX_REWARD = 1.0
+SIGMA = 7.0
 
 # ---------------------------------------------------------------------------------------------------
 # GLOBAL VARIABLES FOR TRAINING 
 # ---------------------------------------------------------------------------------------------------
-LOAD_MODEL_WEIGHTS_ENABLED = True # False
+LOAD_MODEL_WEIGHTS_ENABLED = False
 
 MEMORY_FRACTION = 0.3333
 
-TOTAL_EPISODES = 5000
+TOTAL_EPISODES = 10000
 STEPS_PER_EPISODE = 1000
 AVERAGE_EPISODES_COUNT = 40
+
+NON_MOVING_STEPS = 100
 
 REPLAY_BUFFER_CAPACITY = 100000
 BATCH_SIZE = 64
@@ -239,8 +241,8 @@ class CarlaEnvironment:
                                                     'x_max': 30,
                                                     'y_min': -44,
                                                     'y_max': -15,
-                                                    'yaw_min': -180,
-                                                    'yaw_max': 180
+                                                    'yaw_min': 150,
+                                                    'yaw_max': 210
                                                   },
                              'random_entrance':   {
                                                     'x0': 0.0,
@@ -249,8 +251,8 @@ class CarlaEnvironment:
                                                     'x_max': 29,
                                                     'y_min': -33,
                                                     'y_max': -27,
-                                                    'yaw_min': -180,
-                                                    'yaw_max': 180
+                                                    'yaw_min': 150,
+                                                    'yaw_max': 210
                                                   }
                             }
 
@@ -378,24 +380,19 @@ class CarlaEnvironment:
 
         """
 
-        self.collision_hist = []
-        self.last_collisions_median = 0
+        self.collision_impulse = None
+        self.last_collision_impulse = None
 
         self.actor_list = []
  
         # ------------------------------ SPAWNING AGENT ----------------------------------
 
-        # random_spawn_mode = random.choice(['random_lane', 'random_entrance', 'carla_recommended'])
-        # random_spawn_mode = random.choice(['random_lane', 'random_entrance'])
-        # spawn_point = self.random_spawn(random_spawn_mode)
+        spawn_point = self.random_spawn('random_entrance')
 
-        spawn_point = carla.Transform(carla.Location(x=17.2, y=-29.7, z=self.spawning_z_offset), carla.Rotation(yaw=180.0))
+        # spawn_point = carla.Transform(carla.Location(x=17.2, y=-29.7, z=self.spawning_z_offset), carla.Rotation(yaw=180.0))
 
         self.vehicle = self.world.spawn_actor(self.model_3, spawn_point)
         self.actor_list.append(self.vehicle)
-
-        self.starting_distance_from_goal = self.vehicle.get_transform().location.distance(self.parking_map['goal_parking_spot'].location)
-
         self.vehicle.apply_control(carla.VehicleControl(throttle=0.0, brake=0.0))
         time.sleep(_SLEEP_TIME_)
 
@@ -466,7 +463,11 @@ class CarlaEnvironment:
 
         self.episode_start = time.time()
         self.vehicle.apply_control(carla.VehicleControl(throttle=0.0, brake=0.0))
-        current_state, _ = self.get_current_state()
+        current_state, current_state_dict = self.get_current_state()
+
+        self.last_distance_to_goal = current_state_dict['distance_to_goal'] 
+        self.distance_to_goal = self.last_distance_to_goal
+        self.non_moving_steps_cnt = 0
 
         return current_state
 
@@ -486,7 +487,10 @@ class CarlaEnvironment:
 
         imp_3d = collision_data.normal_impulse
         intesity = np.sqrt((imp_3d.x)**2 + (imp_3d.y)**2 + (imp_3d.z)**2)
-        self.collision_hist.append(intesity)
+
+        self.last_collision_impulse = self.collision_impulse
+
+        self.collision_impulse = intesity
 
     def radar_data(self, radar_data, key):
 
@@ -539,11 +543,12 @@ class CarlaEnvironment:
         :return:
             - current_state: numpy array with shape (STATE_SIZE, ) containing all sensor readings:
                              - 8 radar readings:  min depth of radar readings from 8 different positions on vehicle
+                             - x: x coordinate of center of vehicle in global coordinates
+                             - y: y coordinate of center of vehicle in global coordinates
                              - x_rel: difference of x coordinate center of goal parking spot and of center of vehicle in global coordinates (relative x)
                              - y_rel: difference of y coordinate center of goal parking spot and of center of vehicle in global coordinates (relative y)
                              - angle: angle of rotation along axial axis (z-axis)
                              - vx: linear velocity along x-axis of vehicle
-                             - ax: acceleration along x-axis of vehicle
                              - wz: angular velocity along z-axis of vehicle - rotation velocity
                              - distance_to_goal: Euclidian distance from current position of vehicle to the goal position 
 
@@ -561,25 +566,26 @@ class CarlaEnvironment:
 
         current_vehicle_linear_velocity = self.vehicle.get_velocity().x
         current_vehicle_angular_velocity = self.vehicle.get_angular_velocity().z
-        current_vehicle_acceleration = self.vehicle.get_acceleration().x
 
+        x = current_vehicle_x
+        y = current_vehicle_y
         x_rel = self.parking_map['goal_parking_spot'].location.x - current_vehicle_x
         y_rel = self.parking_map['goal_parking_spot'].location.y - current_vehicle_y
         angle = self.transform_angle(angle)
         vx = current_vehicle_linear_velocity 
-        ax = current_vehicle_acceleration
         wz = current_vehicle_angular_velocity  
         distance_to_goal = current_vehicle_location.distance(self.parking_map['goal_parking_spot'].location)
 
-        current_state = list(self.radar_readings.values()) + [x_rel, y_rel, angle, vx, ax, wz, distance_to_goal]
+        current_state = list(self.radar_readings.values()) + [x, y, x_rel, y_rel, angle, vx, wz, distance_to_goal]
 
         # -------------------------- PACKING CURRENT STATE IN DICTIONARY AND ARRAY ------------------------------
         sensor_values_dict = {
-                                'x': x_rel,
-                                'y': y_rel,
+                                'x': x,
+                                'y': y,
+                                'x_rel': x_rel,
+                                'y_rel': y_rel,
                                 'angle': angle,
                                 'vx': vx,
-                                'ax': ax,
                                 'wz': wz,
                                 'distance_to_goal': distance_to_goal,
                              }
@@ -590,6 +596,33 @@ class CarlaEnvironment:
         current_state = np.array(current_state, dtype='float32').reshape((STATE_SIZE,))
 
         return current_state, current_state_dict
+
+    def check_non_movement(self):
+
+        """
+        Function for logging of how many consecutive steps has agent not moved and indicating if it time to break the episode.
+            
+        :params:
+            None
+
+        :return:
+            - non_movement_indicator: boolean value that indicates if agent has violated NON_MOVING_STEPS ban
+
+        """
+
+        non_movement_indicator = False
+
+        if abs(self.last_distance_to_goal - self.distance_to_goal) <= 0.01:
+
+            self.non_moving_steps_cnt += 1
+
+            if self.non_moving_steps_cnt >= NON_MOVING_STEPS:
+
+                non_movement_indicator = True
+        else:
+            self.non_moving_steps_cnt = 0
+
+        return non_movement_indicator
 
     def step(self, actions):
 
@@ -625,31 +658,34 @@ class CarlaEnvironment:
         distance = current_state_dict['distance_to_goal']
         angle = current_state_dict['angle']
 
-        collisions_median = np.median(np.array(self.collision_hist))
+        self.last_distance_to_goal = self.distance_to_goal
+        self.distance_to_goal = distance
 
         # ---------------- PENALTY/REWARD CALCULATION FOR APPLIED ACTIONS -------------------
 
-        if len(self.collision_hist) != 0 and collisions_median != self.last_collisions_median: 
-            done = False
-            reward = -collisions_median
-            self.last_collisions_median = collisions_median
+        if self.collision_impulse != None and self.collision_impulse != self.last_collision_impulse: 
 
-            if collisions_median >= MAX_COLLISION_IMPULSE:
+            if self.collision_impulse >= MAX_COLLISION_IMPULSE:
+                reward = -MAX_REWARD
                 done = True
+            else:
+                reward = - 1.0/self.collision_impulse
 
-        elif distance > MAX_DISTANCE:
-            done = False 
-            reward = -distance
+        elif distance >= MAX_DISTANCE:
+            reward = -MAX_REWARD
+            done = True 
 
-            if distance > 1.2*MAX_DISTANCE:
-                done = True
+        elif self.check_non_movement():
+            reward = -MAX_REWARD
+            done = True 
+
         else:
+            reward = self.calculate_reward(distance, angle)
             done = False
-            reward = self.calculate_reward(distance, angle, mode='gauss')
 
         return current_state, reward, done
 
-    def calculate_reward(self, distance, angle, d_val_1=5, mode='exp'):
+    def calculate_reward(self, distance, angle, d_val_1=2, mode='gauss'):
 
         """
         Function for regular calculating current reward for just taken actions. Check for provided
@@ -658,15 +694,12 @@ class CarlaEnvironment:
         :params:
             - distance: Euclidean distance from current agent's position to the center of goal parking spot
             - angle: current agent's global yaw angle
-            - d_val_1: distance (in meters) where reward function is crossing 1 (for 'exp' and 'lin' mode)
-            - mode: currently 4 modes:
-                    - exp: exponential-like reward function, with values in range [0,1] for distance in range [MAX_DISTANCE, d_val_1],
-                           and values higher than 1 for distance in range [0, d_val_1]
+            - d_val_1: distance (in meters) where reward function is crossing 1 (for 'lin' mode)
+            - mode: currently 2 modes:
                     - lin: part-by-part linear reward function, with values in range [0,1] for distance in range [MAX_DISTANCE, d_val_1],
-                           and values higher than 1 for distance in range [0, d_val_1]
+                           and values higher than 1 or equal to 1 for distance in range [0, d_val_1]
                     - gauss: Gaussian-like reward function with hyperparameter SIGMA, centered over mean value which is 0.0, because of
                              maximum of this function in distance = 0
-                    - rec: reciprocal reward function of distance
 
         :return:
             - reward: calculated reward value for taken actions
@@ -675,14 +708,11 @@ class CarlaEnvironment:
 
         # ----------------------- ANGLE PENALTY CALCULATION ----------------------------
         theta = self.transform_angle(self.parking_map['goal_parking_spot'].rotation.yaw) - angle
-        angle_penalty = np.cos(np.deg2rad(theta))
+        angle_penalty = abs(np.cos(np.deg2rad(theta)))
 
         # ----------------------- DISTANCE PENALTY CALCULATION ----------------------------
-        if mode == 'exp':
-            alpha = d_val_1/(np.log(MAX_REWARD))
-            reward = MAX_REWARD*np.exp(-(distance/alpha))
 
-        elif mode == 'lin':
+        if mode == 'lin':
             if distance >= d_val_1 and distance < MAX_DISTANCE :
                 reward = (-1.0/(MAX_DISTANCE-d_val_1))*distance + MAX_DISTANCE/(MAX_DISTANCE-d_val_1)
             
@@ -692,11 +722,6 @@ class CarlaEnvironment:
         elif mode == 'gauss':
             reward = MAX_REWARD*np.exp(-distance**2/(2*SIGMA**2))        
 
-        elif mode == 'rec':
-            if distance <= 0.001:
-                distance = 0.001
-
-            reward = 1.0/distance   
         
         reward = reward * angle_penalty
 
@@ -787,6 +812,8 @@ class DDPGAgent:
 
         """
 
+        global training_indicator
+
         stopped = '_terminated' if terminated else ''
         model_weights_file_name = 'models/parking_agent'+ model_name + '_actor'  + stopped + '.h5'
 
@@ -808,7 +835,7 @@ class DDPGAgent:
 
         # ----------------------- LOADING STORED WEIGHTS IF ENABLED ----------------------------
 
-        if LOAD_MODEL_WEIGHTS_ENABLED == True and os.path.exists(model_weights_file_name):
+        if training_indicator == 1 and os.path.exists(model_weights_file_name):
             model.load_weights(model_weights_file_name)
 
         elif model_name == '_target':
@@ -834,6 +861,8 @@ class DDPGAgent:
 
         """
 
+        global training_indicator
+
         stopped = '_terminated' if terminated else ''
         model_weights_file_name = 'models/parking_agent'+ model_name +'_critic' + stopped + '.h5'
 
@@ -856,7 +885,7 @@ class DDPGAgent:
        
         # ----------------------- LOADING STORED WEIGHTS IF ENABLED ----------------------------
 
-        if LOAD_MODEL_WEIGHTS_ENABLED == True and os.path.exists(model_weights_file_name):
+        if training_indicator == 1 and os.path.exists(model_weights_file_name):
             model.load_weights(model_weights_file_name)
 
         elif model_name == '_target':
@@ -898,8 +927,8 @@ class DDPGAgent:
 
         epsilon -= 1.0/EXPLORE 
 
-        throttle = float(sampled_actions[0] + float(training_indicator)*max(epsilon, MIN_EPSILON)*noise_throttle())
-        steer = float(sampled_actions[1] + float(training_indicator)*max(epsilon, MIN_EPSILON)*noise_steer())
+        throttle = float(sampled_actions[0] + float(np.sign(training_indicator)*(training_indicator-1))*max(epsilon, MIN_EPSILON)*noise_throttle())
+        steer = float(sampled_actions[1] + float(np.sign(training_indicator)*(training_indicator-1))*max(epsilon, MIN_EPSILON)*noise_steer())
 
         if throttle > 1:
             throttle = 1
@@ -1088,9 +1117,9 @@ def update_target(target_weights, actual_weights):
 # ---------------------------------------------------------------------------------------------------
 if __name__ == '__main__':
 
-    random.seed(12453)
-    np.random.seed(553)
-    tf.random.set_seed(312)
+    random.seed(3)
+    np.random.seed(3)
+    tf.random.set_seed(3)
 
     # ----------------------- GPU ACCELERATION SETTINGS ----------------------------
     config = tf.compat.v1.ConfigProto()
@@ -1108,7 +1137,7 @@ if __name__ == '__main__':
 
     # ---------------------- SELECTING PURPOSE OF PROGRAM ----------------------
 
-    training_indicator = int(input('Select one option: \n \tPlay with trained (press 0)\n \tTraining (press 1)\n \tYour answer: '))
+    training_indicator = int(input('Select one option: \n \tPlay with trained model (press 0)\n \tTrain pretrained model (press 1)\n \tTrain new model (press 2)\n \tYour answer: '))
 
     try: 
 
@@ -1142,7 +1171,7 @@ if __name__ == '__main__':
         episode_reward_list = []
         average_reward_list = []
 
-        if training_indicator == 1:
+        if training_indicator in [1, 2]:
             print('-----------------Start of training process---------------')
         else:
             print('-----------------Start---------------')
@@ -1176,7 +1205,7 @@ if __name__ == '__main__':
                 episodic_reward += reward
 
                 # ----------------------- LEARNING PROCESS ----------------------------
-                if training_indicator == 1:
+                if training_indicator in [1, 2]:
                     
                     replay_buffer.learn()
 
@@ -1203,7 +1232,7 @@ if __name__ == '__main__':
 
             print('Episode * {} * Episodic Reward is ==> {}'.format(episode, episodic_reward))            
 
-        if training_indicator == 1:
+        if training_indicator in [1, 2]:
             print('-----------------End of training process---------------')
         else:
             print('-----------------End---------------')
@@ -1222,8 +1251,8 @@ if __name__ == '__main__':
         # ----------------------- PLOTTING REWARDS ----------------------------
 
         plt.figure(figsize = (10,10), dpi = 100)
-        plt.plot(np.arange(1,TOTAL_EPISODES+1), episode_reward_list, color='red', linewidth=1.0, label='episodic')
-        plt.plot(np.arange(1,TOTAL_EPISODES+1), average_reward_list, color='green', linewidth=1.5, label='average episodic')
+        plt.plot(np.arange(1,TOTAL_EPISODES+1), episode_reward_list, color='tomato', linewidth=1.0, label='episodic')
+        plt.plot(np.arange(1,TOTAL_EPISODES+1), average_reward_list, color='darkgreen', linewidth=1.5, label='average episodic')
         plt.xlabel('Episode')
         plt.ylabel('Rt')
         plt.grid()
@@ -1236,6 +1265,16 @@ if __name__ == '__main__':
         
         if training_indicator == 1:
 
+            # ----------------------- SAVING TERMINATED MODELS IN OLD ONES ----------------------------.
+
+            actor_model.save_weights('models/parking_agent_actor.h5')
+            critic_model.save_weights('models/parking_agent_critic.h5')
+
+            target_actor.save_weights('models/parking_agent_target_actor.h5')
+            target_critic.save_weights('models/parking_agent_target_critic.h5')
+
+        if training_indicator == 2:
+
             # ----------------------- SAVING TERMINATED MODELS ----------------------------.
 
             actor_model.save_weights('models/parking_agent_actor_terminated.h5')
@@ -1244,20 +1283,21 @@ if __name__ == '__main__':
             target_actor.save_weights('models/parking_agent_target_actor_terminated.h5')
             target_critic.save_weights('models/parking_agent_target_critic_terminated.h5')
 
-            now = datetime.now()
-            date_time_string = now.strftime('%d-%m-%Y_%H-%M-%S')
-
-            # ----------------------- PLOTTING REWARDS OF TERMINATED LEARNING PROCESS ----------------------------
-
-            plt.figure(figsize = (10,10), dpi = 100)
-            plt.plot(np.arange(1, len(episode_reward_list)+1), episode_reward_list, color='red', linewidth=1.0, label='episodic')
-            plt.plot(np.arange(1, len(average_reward_list)+1), average_reward_list, color='green', linewidth=1.5, label='average episodic')
-            plt.xlabel('Episode')
-            plt.ylabel('Rt')
-            plt.grid()
-            plt.title('Episodic and Average Episodic Reward \n (averaged over every last {} episodes) \n --- terminated at episode {}/{} ---'.format(AVERAGE_EPISODES_COUNT, episode-1, TOTAL_EPISODES))
-            plt.legend(loc='upper right')
-            plt.savefig(FOLDER_PATH + '/training_images/training_rewards_terminated_'+ date_time_string +'.png')
-
         else:
             pass
+
+        # ----------------------- PLOTTING REWARDS OF TERMINATED LEARNING PROCESS ----------------------------
+
+        now = datetime.now()
+        date_time_string = now.strftime('%d-%m-%Y_%H-%M-%S')
+
+        plt.figure(figsize = (10,10), dpi = 100)
+        plt.plot(np.arange(1, len(episode_reward_list)+1), episode_reward_list, color='tomato', linewidth=1.0, label='episodic')
+        plt.plot(np.arange(1, len(average_reward_list)+1), average_reward_list, color='darkgreen', linewidth=1.5, label='average episodic')
+        plt.xlabel('Episode')
+        plt.ylabel('Rt')
+        plt.grid()
+        plt.title('Episodic and Average Episodic Reward \n (averaged over every last {} episodes) \n --- terminated at episode {}/{} ---'.format(AVERAGE_EPISODES_COUNT, episode-1, TOTAL_EPISODES))
+        plt.legend(loc='upper right')
+        plt.savefig(FOLDER_PATH + '/training_images/training_rewards_terminated_'+ date_time_string +'.png')
+
