@@ -44,17 +44,15 @@ STATE_SIZE = 16
 
 MAX_COLLISION_IMPULSE = 50
 MAX_DISTANCE = 20
-MAX_REWARD = 1.0
-SIGMA = 7.0
+MAX_REWARD = 20.0
+SIGMA = 2.0
 
 # ---------------------------------------------------------------------------------------------------
 # GLOBAL VARIABLES FOR TRAINING 
 # ---------------------------------------------------------------------------------------------------
-LOAD_MODEL_WEIGHTS_ENABLED = False
-
 MEMORY_FRACTION = 0.3333
 
-TOTAL_EPISODES = 10000
+TOTAL_EPISODES = 1000 # 10000
 STEPS_PER_EPISODE = 1000
 AVERAGE_EPISODES_COUNT = 40
 
@@ -666,21 +664,22 @@ class CarlaEnvironment:
         if self.collision_impulse != None and self.collision_impulse != self.last_collision_impulse: 
 
             if self.collision_impulse >= MAX_COLLISION_IMPULSE:
-                reward = -MAX_REWARD
+                reward = -1.0
                 done = True
             else:
-                reward = - 1.0/self.collision_impulse
+                reward = -self.collision_impulse/MAX_COLLISION_IMPULSE
+                done = False
 
         elif distance >= MAX_DISTANCE:
-            reward = -MAX_REWARD
+            reward = -1.0
             done = True 
 
         elif self.check_non_movement():
-            reward = -MAX_REWARD
+            reward = -1.0
             done = True 
 
         else:
-            reward = self.calculate_reward(distance, angle)
+            reward = self.calculate_reward(distance, angle, mode='lin')
             done = False
 
         return current_state, reward, done
@@ -709,6 +708,8 @@ class CarlaEnvironment:
         # ----------------------- ANGLE PENALTY CALCULATION ----------------------------
         theta = self.transform_angle(self.parking_map['goal_parking_spot'].rotation.yaw) - angle
         angle_penalty = abs(np.cos(np.deg2rad(theta)))
+
+        angle_penalty = max(angle_penalty, 0.01)
 
         # ----------------------- DISTANCE PENALTY CALCULATION ----------------------------
 
@@ -782,7 +783,35 @@ class OUActionNoise:
 
         """
         self.x_prev = self.x_initial if self.x_initial is not None else np.zeros_like(self.mu)
-        
+
+    def noise_factor(self):
+
+        """
+        Function for calculating factor that multiplies noise sample while sampling actions.
+            
+        :params:
+            None
+
+        :return:
+            - factor: calculated multiplicative factor
+
+        """
+
+        global epsilon, training_indicator
+
+        if training_indicator == 0:
+            factor = 0.0
+
+        elif training_indicator == 1:
+            factor = MIN_EPSILON
+
+        elif training_indicator == 2:
+
+            epsilon -= 1.0/EXPLORE 
+            factor = max(epsilon, MIN_EPSILON)
+
+        return factor
+    
 # ---------------------------------------------------------------------------------------------------
 # DEEP DETERMINISTIC POLICY GRADIENT (DDPG) AGENT CLASS
 # ---------------------------------------------------------------------------------------------------
@@ -913,8 +942,6 @@ class DDPGAgent:
 
         """
 
-        global epsilon, training_indicator
-
         # ----------------------- SAMPLING ORNSTEIN-UHLENBECK NOISE ----------------------------
 
         noise_throttle = noise_objects_dict['throttle']
@@ -925,10 +952,8 @@ class DDPGAgent:
         sampled_actions = tf.squeeze(actor_model(state))
         sampled_actions = sampled_actions.numpy()
 
-        epsilon -= 1.0/EXPLORE 
-
-        throttle = float(sampled_actions[0] + float(np.sign(training_indicator)*(training_indicator-1))*max(epsilon, MIN_EPSILON)*noise_throttle())
-        steer = float(sampled_actions[1] + float(np.sign(training_indicator)*(training_indicator-1))*max(epsilon, MIN_EPSILON)*noise_steer())
+        throttle = float(sampled_actions[0] + float(noise_throttle.noise_factor()*noise_throttle()))
+        steer = float(sampled_actions[1] + float(noise_steer.noise_factor()*noise_steer()))
 
         if throttle > 1:
             throttle = 1
