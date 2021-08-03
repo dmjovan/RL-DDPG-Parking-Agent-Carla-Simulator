@@ -9,7 +9,6 @@ import time
 import numpy as np
 import math
 import pandas as pd
-from datetime import datetime
 import matplotlib.pyplot as plt
 
 import tensorflow as tf
@@ -52,7 +51,7 @@ SIGMA = 2.0
 # ---------------------------------------------------------------------------------------------------
 MEMORY_FRACTION = 0.3333
 
-TOTAL_EPISODES = 1000 # 10000
+TOTAL_EPISODES = 2000 # 10000
 STEPS_PER_EPISODE = 1000
 AVERAGE_EPISODES_COUNT = 40
 
@@ -245,10 +244,10 @@ class CarlaEnvironment:
                              'random_entrance':   {
                                                     'x0': 0.0,
                                                     'y0': 0.0,
-                                                    'x_min': 13,
-                                                    'x_max': 29,
-                                                    'y_min': -33,
-                                                    'y_max': -27,
+                                                    'x_min': 0,
+                                                    'x_max': 16,
+                                                    'y_min': -36,
+                                                    'y_max': -28,
                                                     'yaw_min': 150,
                                                     'yaw_max': 210
                                                   }
@@ -1137,6 +1136,28 @@ def update_target(target_weights, actual_weights):
     for (a, b) in zip(target_weights, actual_weights):
         a.assign(b * TAU + a * (1 - TAU))
 
+def save_training_data(data, column_name, path):
+
+    """
+    Function for saving training data into .csv file.
+        
+    :params:
+        - data: list of floats
+        - column_name: name of the column (data name)
+        - path: path to save data 
+
+    :return:
+        None
+
+    """
+
+    d = {column_name: data}
+
+    df = pd.DataFrame(d)
+    df.dtype = 'float32'
+
+    df.to_csv(path, index=False)
+
 # ---------------------------------------------------------------------------------------------------
 # MAIN PROGRAM
 # ---------------------------------------------------------------------------------------------------
@@ -1155,14 +1176,12 @@ if __name__ == '__main__':
     if not os.path.isdir('models'):
         os.makedirs('models')
 
-    # creating training_images folder
-    if not os.path.isdir('training_images'):
-        os.makedirs('training_images')
-
-
     # ---------------------- SELECTING PURPOSE OF PROGRAM ----------------------
 
     training_indicator = int(input('Select one option: \n \tPlay with trained model (press 0)\n \tTrain pretrained model (press 1)\n \tTrain new model (press 2)\n \tYour answer: '))
+
+    if training_indicator in [1, 2]:
+        training_name = str(input('Write the name of this training: \n \tYour answer: '))
 
     try: 
 
@@ -1193,6 +1212,8 @@ if __name__ == '__main__':
 
         # ----------------- TRAINING PROCESS (ITERATING OVER EPISODES) ---------------------
 
+        reward_list = []
+        step_list = []
         episode_reward_list = []
         average_reward_list = []
 
@@ -1207,7 +1228,7 @@ if __name__ == '__main__':
             episodic_reward = 0
 
             # ----------------- ITERATING IN ONE EPISODE ---------------------
-            for step in range(STEPS_PER_EPISODE):
+            for step in range(1,STEPS_PER_EPISODE+1):
 
                 # ----------------- SAMPLING AND APPLYING ACTIONS, TAKING OBSERVATIONS ---------------------
 
@@ -1226,6 +1247,8 @@ if __name__ == '__main__':
                 # ----------------- RECORDING CURRENT OBSERVATION ---------------------
 
                 replay_buffer.record(observation)
+
+                reward_list.append(reward)
 
                 episodic_reward += reward
 
@@ -1249,6 +1272,11 @@ if __name__ == '__main__':
 
             env.destroy_actors()
 
+            if not step_list:
+                step_list.append(step)
+            else:
+                step_list.append(step_list[-1]+step)
+
             # ----------------------- STORING REWARDS ----------------------------
 
             episode_reward_list.append(episodic_reward)
@@ -1259,31 +1287,37 @@ if __name__ == '__main__':
 
         if training_indicator in [1, 2]:
             print('-----------------End of training process---------------')
+
+            # ----------------------- SAVING MODELS ----------------------------
+
+            actor_model.save_weights('models/parking_agent_actor.h5')
+            critic_model.save_weights('models/parking_agent_critic.h5')
+
+            target_actor.save_weights('models/parking_agent_target_actor.h5')
+            target_critic.save_weights('models/parking_agent_target_critic.h5')
+
+
+            # ----------------------- SAVING TRAINING DATA ----------------------------
+
+            save_training_data(data=reward_list,
+                               column_name='reward',
+                               path=FOLDER_PATH + '/training_data/data/'+training_name+'_rewards.csv')
+
+            save_training_data(data=step_list,
+                               column_name='step',
+                               path=FOLDER_PATH + '/training_data/data/'+training_name+'_steps.csv')
+
+            save_training_data(data=episode_reward_list,
+                               column_name='episodic_reward',
+                               path=FOLDER_PATH + '/training_data/data/'+training_name+'_episodic_rewards.csv')
+
+            save_training_data(data=average_reward_list,
+                               column_name='average_reward',
+                               path=FOLDER_PATH + '/training_data/data/'+training_name+'_average_episodic_rewards.csv')
+
         else:
             print('-----------------End---------------')
 
-        # ----------------------- SAVING MODELS ----------------------------
-
-        actor_model.save_weights('models/parking_agent_actor.h5')
-        critic_model.save_weights('models/parking_agent_critic.h5')
-
-        target_actor.save_weights('models/parking_agent_target_actor.h5')
-        target_critic.save_weights('models/parking_agent_target_critic.h5')
-
-        now = datetime.now()
-        date_time_string = now.strftime('%d-%m-%Y_%H-%M-%S')
-
-        # ----------------------- PLOTTING REWARDS ----------------------------
-
-        plt.figure(figsize = (10,10), dpi = 100)
-        plt.plot(np.arange(1,TOTAL_EPISODES+1), episode_reward_list, color='tomato', linewidth=1.0, label='episodic')
-        plt.plot(np.arange(1,TOTAL_EPISODES+1), average_reward_list, color='darkgreen', linewidth=1.5, label='average episodic')
-        plt.xlabel('Episode')
-        plt.ylabel('Rt')
-        plt.grid()
-        plt.title('Episodic and Average Episodic Reward \n (average over every last {} episodes)'.format(AVERAGE_EPISODES_COUNT))
-        plt.legend(loc='upper right')
-        plt.savefig(FOLDER_PATH + '/training_images/training_rewards_'+ date_time_string +'.png')
 
     # ----------------------- CATCHING EXCEPTIONS DURING TRAINING ----------------------------
     except :
@@ -1310,19 +1344,3 @@ if __name__ == '__main__':
 
         else:
             pass
-
-        # ----------------------- PLOTTING REWARDS OF TERMINATED LEARNING PROCESS ----------------------------
-
-        now = datetime.now()
-        date_time_string = now.strftime('%d-%m-%Y_%H-%M-%S')
-
-        plt.figure(figsize = (10,10), dpi = 100)
-        plt.plot(np.arange(1, len(episode_reward_list)+1), episode_reward_list, color='tomato', linewidth=1.0, label='episodic')
-        plt.plot(np.arange(1, len(average_reward_list)+1), average_reward_list, color='darkgreen', linewidth=1.5, label='average episodic')
-        plt.xlabel('Episode')
-        plt.ylabel('Rt')
-        plt.grid()
-        plt.title('Episodic and Average Episodic Reward \n (averaged over every last {} episodes) \n --- terminated at episode {}/{} ---'.format(AVERAGE_EPISODES_COUNT, episode-1, TOTAL_EPISODES))
-        plt.legend(loc='upper right')
-        plt.savefig(FOLDER_PATH + '/training_images/training_rewards_terminated_'+ date_time_string +'.png')
-
