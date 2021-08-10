@@ -51,7 +51,7 @@ SIGMA = 2.0
 # ---------------------------------------------------------------------------------------------------
 MEMORY_FRACTION = 0.3333
 
-TOTAL_EPISODES = 2000 # 10000
+TOTAL_EPISODES = 1000 # 10000
 STEPS_PER_EPISODE = 500
 AVERAGE_EPISODES_COUNT = 40
 
@@ -993,14 +993,59 @@ class ReplayBuffer:
 
         """
 
-        self.buffer_capacity = buffer_capacity
+        global training_indicator
+
         self.batch_size = batch_size
         self.buffer_counter = 0
 
-        self.state_buffer = np.zeros((self.buffer_capacity, STATE_SIZE))
-        self.action_buffer = np.zeros((self.buffer_capacity, ACTIONS_SIZE))
-        self.reward_buffer = np.zeros((self.buffer_capacity, 1))
-        self.next_state_buffer = np.zeros((self.buffer_capacity, STATE_SIZE))
+        if training_indicator == 1:
+
+            try:
+
+                self.state_buffer = np.loadtxt(FOLDER_PATH + '/replay_buffer_data/state_buffer.csv', delimiter=',')
+
+                self.buffer_capacity = self.state_buffer.shape[0]
+
+                self.state_buffer = self.state_buffer.reshape((self.buffer_capacity, STATE_SIZE))
+                self.action_buffer = np.loadtxt(FOLDER_PATH + '/replay_buffer_data/action_buffer.csv', delimiter=',').reshape((self.buffer_capacity, ACTIONS_SIZE))
+                self.reward_buffer = np.loadtxt(FOLDER_PATH + '/replay_buffer_data/reward_buffer.csv', delimiter=',').reshape((self.buffer_capacity, 1))
+                self.next_state_buffer = np.loadtxt(FOLDER_PATH + '/replay_buffer_data/next_state_buffer.csv', delimiter=',').reshape((self.buffer_capacity, STATE_SIZE))
+
+            except:
+
+                self.buffer_capacity = buffer_capacity
+
+                self.state_buffer = np.zeros((self.buffer_capacity, STATE_SIZE))
+                self.action_buffer = np.zeros((self.buffer_capacity, ACTIONS_SIZE))
+                self.reward_buffer = np.zeros((self.buffer_capacity, 1))
+                self.next_state_buffer = np.zeros((self.buffer_capacity, STATE_SIZE))
+
+
+        else:
+            self.buffer_capacity = buffer_capacity
+
+            self.state_buffer = np.zeros((self.buffer_capacity, STATE_SIZE))
+            self.action_buffer = np.zeros((self.buffer_capacity, ACTIONS_SIZE))
+            self.reward_buffer = np.zeros((self.buffer_capacity, 1))
+            self.next_state_buffer = np.zeros((self.buffer_capacity, STATE_SIZE))
+
+    def save_buffer(self):
+
+        """
+        Function for saving current replay buffer into .csv file.
+            
+        :params:
+            None
+
+        :return:
+            None
+
+        """
+
+        np.savetxt(FOLDER_PATH + '/replay_buffer_data/state_buffer.csv', self.state_buffer, delimiter=',')
+        np.savetxt(FOLDER_PATH + '/replay_buffer_data/action_buffer.csv', self.action_buffer, delimiter=',')
+        np.savetxt(FOLDER_PATH + '/replay_buffer_data/reward_buffer.csv', self.reward_buffer, delimiter=',')
+        np.savetxt(FOLDER_PATH + '/replay_buffer_data/next_state_buffer.csv', self.next_state_buffer, delimiter=',')
 
     def record(self, observation):
 
@@ -1176,6 +1221,9 @@ if __name__ == '__main__':
     if not os.path.isdir('models'):
         os.makedirs('models')
 
+    if not os.path.isdir('replay_buffer_data'):
+        os.makedirs('replay_buffer_data')
+
     # ---------------------- SELECTING PURPOSE OF PROGRAM ----------------------
 
     training_indicator = int(input('Select one option: \n \tPlay with trained model (press 0)\n \tTrain pretrained model (press 1)\n \tTrain new model (press 2)\n \tYour answer: '))
@@ -1315,6 +1363,8 @@ if __name__ == '__main__':
                                column_name='average_reward',
                                path=FOLDER_PATH + '/training_data/data/'+training_name+'_average_episodic_rewards.csv')
 
+            replay_buffer.save_buffer()
+
         else:
             print('-----------------End---------------')
 
@@ -1324,7 +1374,7 @@ if __name__ == '__main__':
         
         if training_indicator == 1:
 
-            # ----------------------- SAVING TERMINATED MODELS IN OLD ONES ----------------------------.
+            # ----------------------- SAVING TERMINATED MODELS IN OLD ONES ----------------------------
 
             actor_model.save_weights('models/parking_agent_actor.h5')
             critic_model.save_weights('models/parking_agent_critic.h5')
