@@ -248,12 +248,12 @@ class CarlaEnvironment:
                                                     'x_max': 16,
                                                     'y_min': -36,
                                                     'y_max': -28,
-                                                    'yaw_min': 150,
-                                                    'yaw_max': 210
+                                                    'yaw_min': [150,-30]
+                                                    'yaw_max': [210,30]
                                                   }
                             }
 
-        spawn_transform = self.get_spawn_transform(mode_values_dict[mode])
+        spawn_transform = self.get_spawn_transform(mode_values_dict[mode], mode)
 
         return spawn_transform
 
@@ -292,7 +292,7 @@ class CarlaEnvironment:
 
         return spawn_x, spawn_y
 
-    def get_spawn_transform(self, values):
+    def get_spawn_transform(self, values, mode):
 
         """
         Function for generating random spawn transform for vehicle
@@ -300,6 +300,10 @@ class CarlaEnvironment:
             
         :params:
             - values: dictionary with coordintes of corners for spawning and initial offsets
+            - mode: 3 modes are currently provided:
+                    - carla_recommended: spawn points near parking recommended by Carla authors
+                    - random_lane: spawn points in lane closest to the parking
+                    - random_entrance: spawn points in spatial rectangle in the entrance
 
         :return:
             - spawn_transform: carla.Transform object for spawning location and rotation
@@ -315,8 +319,18 @@ class CarlaEnvironment:
         y_min = values['y_min']
         y_max = values['y_max']
 
-        yaw_min = values['yaw_min']
-        yaw_max = values['yaw_max']
+
+
+        if mode == 'random_entrance':
+
+            index = random.choice([0, 1])
+
+            yaw_min = values['yaw_min'][index]
+            yaw_max = values['yaw_max'][index]
+
+        else:
+            yaw_min = values['yaw_min']
+            yaw_max = values['yaw_max']
 
         x_random_value = random.random()
         x_random_spawn = x_min + x_random_value*(x_max-x_min)
@@ -663,17 +677,23 @@ class CarlaEnvironment:
         if self.collision_impulse != None and self.collision_impulse != self.last_collision_impulse: 
 
             if self.collision_impulse >= MAX_COLLISION_IMPULSE:
-                reward = -1.0
+                reward = -1000
                 done = True
             else:
                 reward = -self.collision_impulse/MAX_COLLISION_IMPULSE
                 done = False
 
         elif distance >= MAX_DISTANCE:
-            reward = -1.0
+            reward = -500
             done = True 
 
-        elif self.check_non_movement():
+        # TODO list:
+        #       - convergence rate (how fast agent comes into goal parking spot)
+        #       - stagnation :
+        #           - correct spot or very close to the spot ----> terminate episode, great reward , set to 10/20 iterations
+        #           - off position ----> terminate episode, non reward, set to 100 iterations or lest
+
+        elif self.check_non_movement(): 
             reward = -1.0
             done = True 
 
