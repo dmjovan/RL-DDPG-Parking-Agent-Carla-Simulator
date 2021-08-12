@@ -55,7 +55,8 @@ TOTAL_EPISODES = 1000 # 10000
 STEPS_PER_EPISODE = 500
 AVERAGE_EPISODES_COUNT = 40
 
-NON_MOVING_STEPS = 50
+CORRECT_POSITION_NON_MOVING_STEPS = 10
+OFF_POSITION_NON_MOVING_STEPS = 50
 
 REPLAY_BUFFER_CAPACITY = 100000
 BATCH_SIZE = 64
@@ -478,6 +479,10 @@ class CarlaEnvironment:
 
         self.last_distance_to_goal = current_state_dict['distance_to_goal'] 
         self.distance_to_goal = self.last_distance_to_goal
+        
+        self.last_angle = current_state_dict['angle'] 
+        self.angle = self.last_angle
+
         self.non_moving_steps_cnt = 0
 
         return current_state
@@ -621,21 +626,49 @@ class CarlaEnvironment:
 
         """
 
-        non_movement_indicator = False
+        correct_position_non_movement_indicator = False
+        off_position_non_movement_indicator = False
 
-        if abs(self.last_distance_to_goal - self.distance_to_goal) <= 0.01:
+        if abs(self.last_distance_to_goal - self.distance_to_goal) <= 0.05:
 
             self.non_moving_steps_cnt += 1
 
-            if self.non_moving_steps_cnt >= NON_MOVING_STEPS:
+            if self.check_if_parked() and (self.non_moving_steps_cnt >= CORRECT_POSITION_NON_MOVING_STEPS):
 
-                non_movement_indicator = True
+                correct_position_non_movement_indicator = True
+
+            elif (not self.check_if_parked()) and (self.non_moving_steps_cnt >= OFF_POSITION_NON_MOVING_STEPS):
+
+                off_position_non_movement_indicator = True
         else:
             self.non_moving_steps_cnt = 0
 
-        return non_movement_indicator
+        return correct_position_non_movement_indicator, off_position_non_movement_indicator
 
-    def step(self, actions):
+    def check_if_parked(self):
+
+        """
+        Function for checking if agent has parked or come on goal parking spot.
+            
+        :params:
+            None
+
+        :return:
+            - vehicle_parked: boolean value indicating if agent has parked pretty well on goal parking spot
+
+        """
+
+        vehicle_parked = False
+
+        goal_angle = self.transform_angle(self.parking_map['goal_parking_spot'].rotation.yaw)
+
+        if (self.distance_to_goal <= 0.5) and ((abs(goal_angle - self.angle) <= 20) or (abs(goal_angle - self.angle) >= 160)) :
+
+            vehicle_parked = True
+
+        return vehicle_parked
+
+    def step(self, actions, current_step):
 
         """
         Function for taking provided actions and  collecting penalty/reward for taken actions.
@@ -644,6 +677,7 @@ class CarlaEnvironment:
             - actions: dictionary with 2 elements with keys
                        - 'throttle': throttle value for vehicle from range -1 to 1, negative throttle sets reverse to True
                        - 'steer': steer value for vehicle from range -1 to 1
+            - current_step: value of current step over one episode
 
         :return:
             - current_state: numpy array with shape (STATE_SIZE, ) containing new current state after applied actions
@@ -672,6 +706,11 @@ class CarlaEnvironment:
         self.last_distance_to_goal = self.distance_to_goal
         self.distance_to_goal = distance
 
+        self.last_angle = self.angle
+        self.angle = angle
+
+        correct_position_stagnating, off_position_stagnating = self.check_non_movement()
+
         # ---------------- PENALTY/REWARD CALCULATION FOR APPLIED ACTIONS -------------------
 
         if self.collision_impulse != None and self.collision_impulse != self.last_collision_impulse: 
@@ -685,23 +724,40 @@ class CarlaEnvironment:
 
         elif distance >= MAX_DISTANCE:
             reward = -500
+            done = True     
+
+        elif correct_position_stagnating == True:
+            reward = 1000
             done = True 
 
-        # TODO list:
-        #       - convergence rate (how fast agent comes into goal parking spot)
-        #       - stagnation :
-        #           - correct spot or very close to the spot ----> terminate episode, great reward , set to 10/20 iterations
-        #           - off position ----> terminate episode, non reward, set to 100 iterations or lest
-
-        elif self.check_non_movement(): 
-            reward = -1.0
+        elif off_position_stagnating == True:
+            reward = 0
             done = True 
 
         else:
             reward = self.calculate_reward(distance, angle, mode='lin')
             done = False
 
+        reward += self.get_convergence_penalty(current_step)
+
         return current_state, reward, done
+
+    def get_convergence_penalty(self, current_step):
+
+        """
+        Function for calculating convergence penalty for faster convergence of agent.
+            
+        :params:
+            - current_step: value of current step over one episode
+
+        :return:
+            - convergence_penalty: penalty for faster convergence of agent (values are from 0 to 1)
+
+        """
+
+        convergence_penalty = -current_step/STEPS_PER_EPISODE
+        return convergence_penalty
+
 
     def calculate_reward(self, distance, angle, d_val_1=2, mode='gauss'):
 
@@ -1303,7 +1359,7 @@ if __name__ == '__main__':
                 tf_state = tf.expand_dims(tf.convert_to_tensor(state), 0)
 
                 actions_arr, actions_dict = agent.policy(tf_state, ou_noise_dict)
-                next_state, reward, done = env.step(actions_dict)
+                next_state, reward, done = env.step(actions_dict, step)
 
                 observation = {
                                 'state': state,
