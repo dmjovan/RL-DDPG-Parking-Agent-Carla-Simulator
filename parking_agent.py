@@ -52,11 +52,11 @@ SIGMA = 2.0
 MEMORY_FRACTION = 0.3333
 
 TOTAL_EPISODES = 1000 # 10000
-STEPS_PER_EPISODE = 500
+STEPS_PER_EPISODE = 100
 AVERAGE_EPISODES_COUNT = 40
 
-CORRECT_POSITION_NON_MOVING_STEPS = 10
-OFF_POSITION_NON_MOVING_STEPS = 50
+CORRECT_POSITION_NON_MOVING_STEPS = 5
+OFF_POSITION_NON_MOVING_STEPS = 20
 
 REPLAY_BUFFER_CAPACITY = 100000
 BATCH_SIZE = 64
@@ -249,7 +249,7 @@ class CarlaEnvironment:
                                                     'x_max': 16,
                                                     'y_min': -36,
                                                     'y_max': -28,
-                                                    'yaw_min': [150,-30]
+                                                    'yaw_min': [150,-30],
                                                     'yaw_max': [210,30]
                                                   }
                             }
@@ -399,9 +399,9 @@ class CarlaEnvironment:
  
         # ------------------------------ SPAWNING AGENT ----------------------------------
 
-        spawn_point = self.random_spawn('random_entrance')
+        # spawn_point = self.random_spawn('random_entrance')
 
-        # spawn_point = carla.Transform(carla.Location(x=17.2, y=-29.7, z=self.spawning_z_offset), carla.Rotation(yaw=180.0))
+        spawn_point = carla.Transform(carla.Location(x=17.2, y=-29.7, z=self.spawning_z_offset), carla.Rotation(yaw=180.0))
 
         self.vehicle = self.world.spawn_actor(self.model_3, spawn_point)
         self.actor_list.append(self.vehicle)
@@ -690,7 +690,7 @@ class CarlaEnvironment:
 
         reverse = False if actions['throttle'] >= 0 else True
         throttle = abs(actions['throttle'])
-        steer = actions['steer']
+        steer = 0.0 # actions['steer']
 
         self.vehicle.apply_control(carla.VehicleControl(throttle=throttle, steer=steer, reverse=reverse))
 
@@ -718,29 +718,43 @@ class CarlaEnvironment:
             if self.collision_impulse >= MAX_COLLISION_IMPULSE:
                 reward = -1000
                 done = True
+                info = 'Agent crashed :('
+
             else:
                 reward = -self.collision_impulse/MAX_COLLISION_IMPULSE
                 done = False
+                info = 'Agent crahed slightly :/'
 
         elif distance >= MAX_DISTANCE:
             reward = -500
-            done = True     
+            done = True    
+            info = 'Agent moved far away from goal :(' 
 
         elif correct_position_stagnating == True:
             reward = 1000
             done = True 
+            info = 'Great job! Agent parked! :D' 
 
         elif off_position_stagnating == True:
             reward = 0
             done = True 
+            info = 'Agent stayed for to long off goal position (distance = ' + str(distance) +'):/' 
 
         else:
             reward = self.calculate_reward(distance, angle, mode='lin')
             done = False
+            info = 'Agent still learning :)' 
 
-        reward += self.get_convergence_penalty(current_step)
+        # reward += self.get_convergence_penalty(current_step)
 
-        return current_state, reward, done
+        if (reverse == True) and (distance > 2) and (current_state_dict['x_rel'] < 0):
+            if reward > 0 :
+                reward *= -1.0
+        elif (reverse == False) and (distance > 2) and (current_state_dict['x_rel'] > 0):
+            if reward > 0 :
+                reward *= -1.0
+
+        return current_state, reward, done, info
 
     def get_convergence_penalty(self, current_step):
 
@@ -1359,7 +1373,7 @@ if __name__ == '__main__':
                 tf_state = tf.expand_dims(tf.convert_to_tensor(state), 0)
 
                 actions_arr, actions_dict = agent.policy(tf_state, ou_noise_dict)
-                next_state, reward, done = env.step(actions_dict, step)
+                next_state, reward, done, info = env.step(actions_dict, step)
 
                 observation = {
                                 'state': state,
@@ -1386,7 +1400,8 @@ if __name__ == '__main__':
                     update_target(target_critic.variables, critic_model.variables)
 
 
-                print('Current step: %d/%d' %(step, STEPS_PER_EPISODE), end='\r')
+                if not done:
+                    print('Current step: %d/%d <<<>>> %s' %(step, STEPS_PER_EPISODE, info), end='\r')
 
                 # ------------ EPISODE TERMINATION / TRANSITION -------------
                 if done:
@@ -1407,7 +1422,7 @@ if __name__ == '__main__':
             average_reward = np.mean(episode_reward_list[-AVERAGE_EPISODES_COUNT:])
             average_reward_list.append(average_reward)
 
-            print('Episode * {} * Episodic Reward is ==> {}'.format(episode, episodic_reward))            
+            print('Episode * {} * Episodic Reward is ==> {} <<<>>> {}'.format(episode, episodic_reward, info))            
 
         if training_indicator in [1, 2]:
             print('-----------------End of training process---------------')
