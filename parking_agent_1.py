@@ -1040,7 +1040,7 @@ class DDPGAgent:
         sampled_actions = tf.squeeze(actor_model(state))
         sampled_actions = sampled_actions.numpy()
 
-        throttle = float(sampled_actions[0] + float(noise_throttle.noise_factor()*noise_throttle()))
+        throttle = float(sampled_actions + float(noise_throttle.noise_factor()*noise_throttle()))
 
         if throttle > 1:
             throttle = 1
@@ -1456,7 +1456,8 @@ if __name__ == '__main__':
 
 
     # ----------------------- CATCHING EXCEPTIONS DURING TRAINING ----------------------------
-    except :
+    except Exception as e:
+        print(e)
         
         if training_indicator == 1:
 
