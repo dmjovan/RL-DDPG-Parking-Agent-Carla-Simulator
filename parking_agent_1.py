@@ -38,7 +38,7 @@ MAP_CSV_PATH = FOLDER_PATH + '/parking_map.csv'
 
 VEHICLES_ON_SIDE_AVAILABLE = False
 
-ACTIONS_SIZE = 2
+ACTIONS_SIZE = 1
 STATE_SIZE = 16
 
 MAX_COLLISION_IMPULSE = 50
@@ -51,12 +51,12 @@ SIGMA = 2.0
 # ---------------------------------------------------------------------------------------------------
 MEMORY_FRACTION = 0.3333
 
-TOTAL_EPISODES = 1000 # 10000
+TOTAL_EPISODES = 2000 
 STEPS_PER_EPISODE = 100
 AVERAGE_EPISODES_COUNT = 40
 
 CORRECT_POSITION_NON_MOVING_STEPS = 2 #5
-OFF_POSITION_NON_MOVING_STEPS = 20
+OFF_POSITION_NON_MOVING_STEPS = 5
 
 REPLAY_BUFFER_CAPACITY = 100000
 BATCH_SIZE = 64
@@ -690,9 +690,8 @@ class CarlaEnvironment:
 
         reverse = False if actions['throttle'] >= 0 else True
         throttle = abs(actions['throttle'])
-        steer = 0.0 # actions['steer']
 
-        self.vehicle.apply_control(carla.VehicleControl(throttle=throttle, steer=steer, reverse=reverse))
+        self.vehicle.apply_control(carla.VehicleControl(throttle=throttle, reverse=reverse))
 
         time.sleep(_SLEEP_TIME_)
 
@@ -941,13 +940,13 @@ class DDPGAgent:
 
         inputs = layers.Input(shape=(STATE_SIZE))
         normalized_inputs = layers.BatchNormalization()(inputs)
-        out1 = layers.Dense(256, activation='relu')(normalized_inputs)
+        out1 = layers.Dense(512, activation='relu')(normalized_inputs)
         out2 = layers.Dense(256, activation='relu')(out1)
         # throttle_action = layers.Dense(1, activation='sigmoid', kernel_initializer=last_init)(out2)
         # steer_action = layers.Dense(1, activation='tanh', kernel_initializer=last_init)(out2)
         # outputs = layers.Concatenate()([throttle_action, steer_action])
 
-        outputs = layers.Dense(2, activation='tanh', kernel_initializer=last_init)(out2)
+        outputs = layers.Dense(1, activation='tanh', kernel_initializer=last_init)(out2)
 
         model = tf.keras.Model(inputs, outputs, name = 'Target_Actor_Model' if model_name=='_target' else 'Actor_Model')
 
@@ -993,11 +992,12 @@ class DDPGAgent:
 
         action_input = layers.Input(shape=(ACTIONS_SIZE))
         normalized_action_inputs = layers.BatchNormalization()(action_input)
-        action_out1 = layers.Dense(128, activation='relu')(normalized_action_inputs)
+        action_out1 = layers.Dense(64, activation='relu')(normalized_action_inputs)
+        action_out2 = layers.Dense(128, activation='relu')(action_out1)
 
-        concat = layers.Concatenate()([state_out2, action_out1])
-        out1 = layers.Dense(512, activation='relu')(concat)
-        out2 = layers.Dense(512, activation='relu')(out1)
+        concat = layers.Concatenate()([state_out2, action_out2])
+        out1 = layers.Dense(256, activation='relu')(concat)
+        out2 = layers.Dense(256, activation='relu')(out1)
         outputs = layers.Dense(1)(out2)
         model = tf.keras.Model([state_input, action_input], outputs, name = 'Target_Critic_Model' if model_name=='_target' else 'Critic_Model')
        
@@ -1034,7 +1034,6 @@ class DDPGAgent:
         # ----------------------- SAMPLING ORNSTEIN-UHLENBECK NOISE ----------------------------
 
         noise_throttle = noise_objects_dict['throttle']
-        noise_steer= noise_objects_dict['steer']
 
         # ------------ SAMPLING ACTIONS FROM ACTOR MODEL AND ADDING NOISE TO THEM --------------
 
@@ -1042,24 +1041,17 @@ class DDPGAgent:
         sampled_actions = sampled_actions.numpy()
 
         throttle = float(sampled_actions[0] + float(noise_throttle.noise_factor()*noise_throttle()))
-        steer = float(sampled_actions[1] + float(noise_steer.noise_factor()*noise_steer()))
 
         if throttle > 1:
             throttle = 1
         elif throttle < -1:
             throttle = -1
 
-        if steer > 1:
-            steer = 1
-        elif steer < -1:
-            steer = -1
-
         # ----------------------- PACKING SAMPLED ACTIONS ----------------------------
 
-        legal_actions_array = np.array([throttle, steer], dtype='float32').reshape((ACTIONS_SIZE,))
+        legal_actions_array = np.array([throttle], dtype='float32').reshape((ACTIONS_SIZE,))
         legal_actions_dict = {
-                              'throttle': throttle,
-                              'steer': steer
+                              'throttle': throttle
                              }
 
         return legal_actions_array, legal_actions_dict
@@ -1333,11 +1325,9 @@ if __name__ == '__main__':
         agent = DDPGAgent()
 
         ou_noise_throttle = OUActionNoise(mu=np.zeros(1), sigma=0.4*np.ones(1))
-        ou_noise_steer = OUActionNoise(mu=np.zeros(1), sigma=0.3*np.ones(1))
 
         ou_noise_dict = {
-                          'throttle': ou_noise_throttle,
-                          'steer': ou_noise_steer
+                          'throttle': ou_noise_throttle
                          }
 
         # -------------- CREATING/LOADING ALL MODELS, CREATING REPLAY MEMORY ------------------
