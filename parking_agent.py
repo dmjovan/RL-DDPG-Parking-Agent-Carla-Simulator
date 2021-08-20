@@ -36,9 +36,14 @@ _SLEEP_TIME_ = 0.5
 FOLDER_PATH = os.getcwd()
 MAP_CSV_PATH = FOLDER_PATH + '/parking_map.csv'
 
-VEHICLES_ON_SIDE_AVAILABLE = False
+OTHER_VEHICLES_AVAILABLE = False
 
-ACTIONS_SIZE = 2
+TRAINING_INDICATOR = 2
+SELECTED_MODEL = 'only_throttle'
+RANDOM_SPAWN = False
+TRAINING_NAME = 'training'
+
+ACTIONS_SIZE = 1
 STATE_SIZE = 16
 
 MAX_COLLISION_IMPULSE = 50
@@ -51,12 +56,12 @@ SIGMA = 2.0
 # ---------------------------------------------------------------------------------------------------
 MEMORY_FRACTION = 0.3333
 
-TOTAL_EPISODES = 1000 # 10000
+TOTAL_EPISODES = 10000 # 10000
 STEPS_PER_EPISODE = 100
 AVERAGE_EPISODES_COUNT = 40
 
 CORRECT_POSITION_NON_MOVING_STEPS = 2 #5
-OFF_POSITION_NON_MOVING_STEPS = 20
+OFF_POSITION_NON_MOVING_STEPS = 10
 
 REPLAY_BUFFER_CAPACITY = 100000
 BATCH_SIZE = 64
@@ -378,17 +383,18 @@ class CarlaEnvironment:
         debug.draw_line(begin_3, end_3, thickness=0.2, color=carla.Color(255,0,0), life_time=0)
         debug.draw_line(begin_4, end_4, thickness=0.2, color=carla.Color(255,0,0), life_time=0)
 
-    def reset(self):
+    def reset(self, spawn_point = None):
 
         """
         Function for reseting environment and starting new episode.
             
         :params:
-            None
+            - spawn_point: specific spawn point to spawn vehicle on start of episode (carla.Transform object)
 
         :return:
             - current_state: numpy array with shape (STATE_SIZE, ) 
                              with all sensor readings on start of the new episode
+            - spawn_point: finally used spawn point for spawning vehicle (carla.Transform object) on episode start
 
         """
 
@@ -399,9 +405,13 @@ class CarlaEnvironment:
  
         # ------------------------------ SPAWNING AGENT ----------------------------------
 
-        # spawn_point = self.random_spawn('random_entrance')
+        if spawn_point == None:
 
-        spawn_point = carla.Transform(carla.Location(x=17.2, y=-29.7, z=self.spawning_z_offset), carla.Rotation(yaw=180.0))
+            if RANDOM_SPAWN :
+                spawn_point = self.random_spawn('random_entrance')
+
+            else:
+                spawn_point = carla.Transform(carla.Location(x=17.2, y=-29.7, z=self.spawning_z_offset), carla.Rotation(yaw=180.0))
 
         self.vehicle = self.world.spawn_actor(self.model_3, spawn_point)
         self.actor_list.append(self.vehicle)
@@ -409,7 +419,7 @@ class CarlaEnvironment:
         time.sleep(_SLEEP_TIME_)
 
         # ------------------------------ SPAWNING OTHER NON-MOVING VEHICLES ----------------------------------
-        if VEHICLES_ON_SIDE_AVAILABLE:
+        if OTHER_VEHICLES_AVAILABLE:
 
             if self.parking_map['left_parking_spot'] != None:
                 self.vehicle_left = self.world.spawn_actor(self.model_3, self.parking_map['left_parking_spot'])
@@ -485,7 +495,7 @@ class CarlaEnvironment:
 
         self.non_moving_steps_cnt = 0
 
-        return current_state
+        return current_state, spawn_point
 
     def collision_data(self, collision_data):
 
@@ -668,94 +678,6 @@ class CarlaEnvironment:
 
         return vehicle_parked
 
-    def step(self, actions, current_step):
-
-        """
-        Function for taking provided actions and  collecting penalty/reward for taken actions.
-            
-        :params:
-            - actions: dictionary with 2 elements with keys
-                       - 'throttle': throttle value for vehicle from range -1 to 1, negative throttle sets reverse to True
-                       - 'steer': steer value for vehicle from range -1 to 1
-            - current_step: value of current step over one episode
-
-        :return:
-            - current_state: numpy array with shape (STATE_SIZE, ) containing new current state after applied actions
-            - reward: reward value for taken actions
-            - done: boolean value, indicating if current episode is finished because of bad behavior of agent, or not
-
-        """
-
-        # -------------------------- APPLYING PROVIDED ACTIONS ------------------------------
-
-        reverse = False if actions['throttle'] >= 0 else True
-        throttle = abs(actions['throttle'])
-        steer = 0.0 # actions['steer']
-
-        self.vehicle.apply_control(carla.VehicleControl(throttle=throttle, steer=steer, reverse=reverse))
-
-        time.sleep(_SLEEP_TIME_)
-
-        # ---------------- GETTING CURRENT STATE AFTER APPLIED ACTIONS -------------------
-
-        current_state, current_state_dict = self.get_current_state()
-
-        distance = current_state_dict['distance_to_goal']
-        angle = current_state_dict['angle']
-
-        self.last_distance_to_goal = self.distance_to_goal
-        self.distance_to_goal = distance
-
-        self.last_angle = self.angle
-        self.angle = angle
-
-        correct_position_stagnating, off_position_stagnating = self.check_non_movement()
-
-        # ---------------- PENALTY/REWARD CALCULATION FOR APPLIED ACTIONS -------------------
-
-        if self.collision_impulse != None and self.collision_impulse != self.last_collision_impulse: 
-
-            if self.collision_impulse >= MAX_COLLISION_IMPULSE:
-                reward = -1000
-                done = True
-                info = 'Agent crashed :('
-
-            else:
-                reward = -self.collision_impulse/MAX_COLLISION_IMPULSE
-                done = False
-                info = 'Agent crahed slightly :/'
-
-        elif distance >= MAX_DISTANCE:
-            reward = -500
-            done = True    
-            info = 'Agent moved far away from goal :(' 
-
-        elif correct_position_stagnating == True:
-            reward = 1000
-            done = True 
-            info = 'Great job! Agent parked! :D' 
-
-        elif off_position_stagnating == True:
-            reward = 0
-            done = True 
-            info = 'Agent stayed for to long off goal position (distance = ' + str(distance) +'):/' 
-
-        else:
-            reward = self.calculate_reward(distance, angle, mode='lin')
-            done = False
-            info = 'Agent still learning :)' 
-
-        # reward += self.get_convergence_penalty(current_step)
-
-        if (reverse == True) and (distance > 2) and (current_state_dict['x_rel'] < 0):
-            if reward > 0 :
-                reward *= -1.0
-        elif (reverse == False) and (distance > 2) and (current_state_dict['x_rel'] > 0):
-            if reward > 0 :
-                reward *= -1.0
-
-        return current_state, reward, done, info
-
     def get_convergence_penalty(self, current_step):
 
         """
@@ -771,7 +693,6 @@ class CarlaEnvironment:
 
         convergence_penalty = -current_step/STEPS_PER_EPISODE
         return convergence_penalty
-
 
     def calculate_reward(self, distance, angle, d_val_1=2, mode='gauss'):
 
@@ -816,6 +737,147 @@ class CarlaEnvironment:
         reward = reward * angle_penalty
 
         return reward
+
+    def apply_vehicle_actions(self, throttle=0.0, steer=0.0, reverse=False, brake=0.0, sleep_time=None):
+
+        """
+        Function for taking actions of Carla agent, proposed by Actor model, or recoreded.
+        This function takes care of vehicle control while training or while recording, but not
+        while reseting environment.
+            
+        :params:
+            - throttle: value for throttle action
+            - steer: value for steer action
+            - reverse: boolean value for reverse indicator
+            - brake: value for brake action
+            - sleep_time: duration of this particular action
+
+        :return:
+            None
+
+        """
+
+        self.vehicle.apply_control(carla.VehicleControl(throttle=float(throttle), steer=float(steer), brake=float(brake), reverse=reverse))
+
+        if sleep_time == None:
+            time.sleep(_SLEEP_TIME_)
+        else:
+            time.sleep(sleep_time)
+
+    def step(self, actions, current_step):
+
+        """
+        Function for taking provided actions and  collecting penalty/reward for taken actions.
+            
+        :params:
+            - actions: dictionary with 2 elements with keys
+                       - 'throttle': throttle value for vehicle from range -1 to 1, negative throttle sets reverse to True
+                       - 'steer': steer value for vehicle from range -1 to 1
+            - current_step: value of current step over one episode
+
+        :return:
+            - current_state: numpy array with shape (STATE_SIZE, ) containing new current state after applied actions
+            - reward: reward value for taken actions
+            - done: boolean value, indicating if current episode is finished because of bad behavior of agent, or not
+            - info: information of this step taken
+            - record_episode: boolean value indicating if this episode should be recorded or not
+
+        """
+
+        # -------------------------- APPLYING PROVIDED ACTIONS ------------------------------
+
+        reverse = False if actions['throttle'] >= 0 else True
+        throttle = abs(actions['throttle'])
+        steer = actions['steer']
+
+        self.apply_vehicle_actions(throttle, steer, reverse)
+
+        # ---------------- GETTING CURRENT STATE AFTER APPLIED ACTIONS -------------------
+
+        current_state, current_state_dict = self.get_current_state()
+
+        distance = current_state_dict['distance_to_goal']
+        angle = current_state_dict['angle']
+
+        self.last_distance_to_goal = self.distance_to_goal
+        self.distance_to_goal = distance
+
+        self.last_angle = self.angle
+        self.angle = angle
+
+        done = False
+        record_episode = False
+
+        correct_position_stagnating, off_position_stagnating = self.check_non_movement()
+
+        # ---------------- PENALTY/REWARD CALCULATION FOR APPLIED ACTIONS -------------------
+
+        if ((self.collision_impulse != None) and (self.collision_impulse != self.last_collision_impulse) and (distance < MAX_DISTANCE)): 
+
+            if self.collision_impulse >= MAX_COLLISION_IMPULSE:
+                reward = -1000
+                done = True
+                info = 'Agent crashed :('
+
+            else:
+                reward = -self.collision_impulse/MAX_COLLISION_IMPULSE
+                done = False
+                info = 'Agent crahed slightly :/'
+
+        elif distance >= MAX_DISTANCE:
+            reward = -500
+            done = True    
+            info = 'Agent moved far away from goal :(' 
+
+        elif correct_position_stagnating == True:
+            reward = 1000
+            done = True 
+            record_episode = True
+            info = 'Great job! Agent parked! :D' 
+
+        elif off_position_stagnating == True:
+            reward = 0
+            done = True 
+            info = 'Agent stayed for to long off goal position (distance = ' + str(distance) +'):/' 
+
+        else:
+            reward = self.calculate_reward(distance, angle, mode='lin')
+            done = False
+            info = 'Agent still learning :)' 
+
+        # reward += self.get_convergence_penalty(current_step)
+
+        if SELECTED_MODEL == 'only_throttle' and not RANDOM_SPAWN: 
+            if (reverse == True) and (distance > 2) and (current_state_dict['x_rel'] < 0):
+                if reward > 0 :
+                    reward *= -1.0
+            elif (reverse == False) and (distance > 2) and (current_state_dict['x_rel'] > 0):
+                if reward > 0 :
+                    reward *= -1.0
+
+        return current_state, reward, done, info, record_episode
+
+    def play_recording(self, recording):
+
+        """
+        Function for playing recorded set of actions.
+            
+        :params:
+            - recording: list of consecutive actions recoreded while training
+
+        :return:
+            None
+
+        """
+
+        for action in recording:
+            reverse = False if action[0] >= 0 else True
+            throttle = abs(action[0])
+            steer = action[1]
+
+            self.apply_vehicle_actions(throttle, steer, reverse)
+
+        self.apply_vehicle_actions(brake=1.0, sleep_time=5.0)
 
     def destroy_actors(self):
 
@@ -886,15 +948,12 @@ class OUActionNoise:
 
         """
 
-        global epsilon, training_indicator
+        global epsilon, TRAINING_INDICATOR
 
-        if training_indicator == 0:
-            factor = 0.0
-
-        elif training_indicator == 1:
+        if TRAINING_INDICATOR == 1:
             factor = MIN_EPSILON
 
-        elif training_indicator == 2:
+        elif TRAINING_INDICATOR == 2:
 
             epsilon -= 1.0/EXPLORE 
             factor = max(epsilon, MIN_EPSILON)
@@ -930,10 +989,11 @@ class DDPGAgent:
 
         """
 
-        global training_indicator
+        global TRAINING_INDICATOR, SELECTED_MODEL
 
         stopped = '_terminated' if terminated else ''
-        model_weights_file_name = 'models/parking_agent'+ model_name + '_actor'  + stopped + '.h5'
+        selected_model = SELECTED_MODEL + '/'
+        model_weights_file_name = 'models/' + selected_model + 'parking_agent'+ model_name + '_actor'  + stopped + '.h5'
 
         # ----------------------- CONSTRUCTING ACTOR MODEL ----------------------------
 
@@ -941,19 +1001,15 @@ class DDPGAgent:
 
         inputs = layers.Input(shape=(STATE_SIZE))
         normalized_inputs = layers.BatchNormalization()(inputs)
-        out1 = layers.Dense(256, activation='relu')(normalized_inputs)
+        out1 = layers.Dense(512, activation='relu')(normalized_inputs)
         out2 = layers.Dense(256, activation='relu')(out1)
-        # throttle_action = layers.Dense(1, activation='sigmoid', kernel_initializer=last_init)(out2)
-        # steer_action = layers.Dense(1, activation='tanh', kernel_initializer=last_init)(out2)
-        # outputs = layers.Concatenate()([throttle_action, steer_action])
-
-        outputs = layers.Dense(2, activation='tanh', kernel_initializer=last_init)(out2)
+        outputs = layers.Dense(ACTIONS_SIZE, activation='tanh', kernel_initializer=last_init)(out2)
 
         model = tf.keras.Model(inputs, outputs, name = 'Target_Actor_Model' if model_name=='_target' else 'Actor_Model')
 
         # ----------------------- LOADING STORED WEIGHTS IF ENABLED ----------------------------
 
-        if training_indicator == 1 and os.path.exists(model_weights_file_name):
+        if TRAINING_INDICATOR == 1 and os.path.exists(model_weights_file_name):
             model.load_weights(model_weights_file_name)
 
         elif model_name == '_target':
@@ -979,10 +1035,11 @@ class DDPGAgent:
 
         """
 
-        global training_indicator
+        global TRAINING_INDICATOR, SELECTED_MODEL
 
         stopped = '_terminated' if terminated else ''
-        model_weights_file_name = 'models/parking_agent'+ model_name +'_critic' + stopped + '.h5'
+        selected_model = SELECTED_MODEL + '/'
+        model_weights_file_name = 'models/' + selected_model + 'parking_agent'+ model_name +'_critic' + stopped + '.h5'
 
         # ----------------------- CONSTRUCTING CRITIC MODEL ----------------------------
 
@@ -993,17 +1050,18 @@ class DDPGAgent:
 
         action_input = layers.Input(shape=(ACTIONS_SIZE))
         normalized_action_inputs = layers.BatchNormalization()(action_input)
-        action_out1 = layers.Dense(128, activation='relu')(normalized_action_inputs)
+        action_out1 = layers.Dense(64, activation='relu')(normalized_action_inputs)
+        action_out2 = layers.Dense(128, activation='relu')(action_out1)
 
-        concat = layers.Concatenate()([state_out2, action_out1])
-        out1 = layers.Dense(512, activation='relu')(concat)
-        out2 = layers.Dense(512, activation='relu')(out1)
+        concat = layers.Concatenate()([state_out2, action_out2])
+        out1 = layers.Dense(256, activation='relu')(concat)
+        out2 = layers.Dense(256, activation='relu')(out1)
         outputs = layers.Dense(1)(out2)
         model = tf.keras.Model([state_input, action_input], outputs, name = 'Target_Critic_Model' if model_name=='_target' else 'Critic_Model')
        
         # ----------------------- LOADING STORED WEIGHTS IF ENABLED ----------------------------
 
-        if training_indicator == 1 and os.path.exists(model_weights_file_name):
+        if TRAINING_INDICATOR == 1 and os.path.exists(model_weights_file_name):
             model.load_weights(model_weights_file_name)
 
         elif model_name == '_target':
@@ -1031,6 +1089,8 @@ class DDPGAgent:
 
         """
 
+        global SELECTED_MODEL
+
         # ----------------------- SAMPLING ORNSTEIN-UHLENBECK NOISE ----------------------------
 
         noise_throttle = noise_objects_dict['throttle']
@@ -1041,28 +1101,122 @@ class DDPGAgent:
         sampled_actions = tf.squeeze(actor_model(state))
         sampled_actions = sampled_actions.numpy()
 
-        throttle = float(sampled_actions[0] + float(noise_throttle.noise_factor()*noise_throttle()))
-        steer = float(sampled_actions[1] + float(noise_steer.noise_factor()*noise_steer()))
+        if SELECTED_MODEL == 'only_throttle':
+            throttle = float(sampled_actions + float(noise_throttle.noise_factor()*noise_throttle()))
 
-        if throttle > 1:
-            throttle = 1
-        elif throttle < -1:
-            throttle = -1
+            if throttle > 1:
+                throttle = 1
+            elif throttle < -1:
+                throttle = -1
 
-        if steer > 1:
-            steer = 1
-        elif steer < -1:
-            steer = -1
+            steer = float(0.0)
 
-        # ----------------------- PACKING SAMPLED ACTIONS ----------------------------
+            legal_actions_array = np.array([throttle], dtype='float32').reshape((ACTIONS_SIZE,))
 
-        legal_actions_array = np.array([throttle, steer], dtype='float32').reshape((ACTIONS_SIZE,))
+        elif SELECTED_MODEL == 'throttle_and_steer':
+
+            throttle = float(sampled_actions[0] + float(noise_throttle.noise_factor()*noise_throttle()))
+            steer = float(sampled_actions[1] + float(noise_steer.noise_factor()*noise_steer()))
+
+            if throttle > 1:
+                throttle = 1
+            elif throttle < -1:
+                throttle = -1
+
+            if steer > 1:
+                steer = 1
+            elif steer < -1:
+                steer = -1
+
+            # ----------------------- PACKING SAMPLED ACTIONS ----------------------------
+
+            legal_actions_array = np.array([throttle, steer], dtype='float32').reshape((ACTIONS_SIZE,))
+
         legal_actions_dict = {
                               'throttle': throttle,
                               'steer': steer
                              }
 
         return legal_actions_array, legal_actions_dict
+
+    def save_recording(self, actions_list, episode, spawn_point):
+
+        """
+        Function for saving all actions agent had taken for getting to the goal.
+        Episode is recorded only if agent manages to solve problem, to get correctly to the pakring spot.
+        If agent make some small crashes but still manages to find the way to goal, episode will still be recorded.
+
+        :params:
+            - actions_list: list of actions taken to get to the goal
+            - episode: ordinal number of episode 
+            - spawn_point: spawn point of episode (carla.Transform)
+
+        :return:
+            None
+
+        """
+
+        global SELECTED_MODEL
+
+        selected_model = SELECTED_MODEL + '/'
+
+        actions = np.array(actions_list).reshape((len(actions_list), 2))
+        np.savetxt(FOLDER_PATH + '/recordings/' + selected_model + str(episode) + '.csv', actions, delimiter=',')
+
+        d = {
+             'x'  : [spawn_point.location.x],
+             'y'  : [spawn_point.location.y],
+             'z'  : [spawn_point.location.z],
+             'yaw': [spawn_point.rotation.yaw]
+             }
+
+        df = pd.DataFrame(d)
+        df.dtype = 'float32'
+
+        df.to_csv(FOLDER_PATH + '/recordings/' + selected_model + str(episode) + '_spawn_point.csv', index=False)
+
+    def get_recordings(self):
+
+        """
+        Function for getting saved recordings of agent best behavior.
+
+        :params:
+            None
+
+        :return:
+            - recordings: list of all recordings
+            - spawn_points: list of carla.Transforms for all recordings
+
+        """
+
+        global SELECTED_MODEL
+
+        path = FOLDER_PATH + '/recordings/' + SELECTED_MODEL + '/'
+
+        recordings = []
+        spawn_points = []
+
+        for filename in os.listdir(path):
+
+            if filename.endswith('.csv') and not filename.endswith('_spawn_point.csv'):
+
+                episode_number = filename[:-4]
+
+                rec = np.loadtxt(os.path.join(path, filename), delimiter=',')
+                rec = (np.reshape(rec, (rec.shape[0], 2))).tolist()
+
+                recordings.append(rec)
+
+                df = pd.read_csv(os.path.join(path, episode_number + '_spawn_point.csv'))
+                data = df.to_numpy()
+
+                spawn_point = carla.Transform(carla.Location(x=data[0][0], y=data[0][1], z=data[0][2]), carla.Rotation(yaw=data[0][3]))
+                spawn_points.append(spawn_point)
+                 
+            else:
+                continue
+
+        return recordings, spawn_points
 
 # ---------------------------------------------------------------------------------------------------
 # REPLAY BUFFER CLASS
@@ -1083,16 +1237,18 @@ class ReplayBuffer:
 
         """
 
-        global training_indicator
+        global TRAINING_INDICATOR, SELECTED_MODEL
+
+        selected_model = SELECTED_MODEL + '/'
 
         self.batch_size = batch_size
         self.buffer_counter = 0
 
-        if training_indicator == 1:
+        if TRAINING_INDICATOR == 1:
 
             try:
 
-                self.state_buffer = np.loadtxt(FOLDER_PATH + '/replay_buffer_data/state_buffer.csv', delimiter=',')
+                self.state_buffer = np.loadtxt(FOLDER_PATH + '/replay_buffer_data/' + selected_model + 'state_buffer.csv', delimiter=',')
 
                 if self.state_buffer.shape[0] < buffer_capacity:
                     self.buffer_capacity = buffer_capacity
@@ -1102,9 +1258,9 @@ class ReplayBuffer:
                     self.buffer_counter = 0
 
                 self.state_buffer = self.state_buffer.reshape((self.buffer_capacity, STATE_SIZE))
-                self.action_buffer = np.loadtxt(FOLDER_PATH + '/replay_buffer_data/action_buffer.csv', delimiter=',').reshape((self.buffer_capacity, ACTIONS_SIZE))
-                self.reward_buffer = np.loadtxt(FOLDER_PATH + '/replay_buffer_data/reward_buffer.csv', delimiter=',').reshape((self.buffer_capacity, 1))
-                self.next_state_buffer = np.loadtxt(FOLDER_PATH + '/replay_buffer_data/next_state_buffer.csv', delimiter=',').reshape((self.buffer_capacity, STATE_SIZE))
+                self.action_buffer = np.loadtxt(FOLDER_PATH + '/replay_buffer_data/' + selected_model + 'action_buffer.csv', delimiter=',').reshape((self.buffer_capacity, ACTIONS_SIZE))
+                self.reward_buffer = np.loadtxt(FOLDER_PATH + '/replay_buffer_data/' + selected_model + 'reward_buffer.csv', delimiter=',').reshape((self.buffer_capacity, 1))
+                self.next_state_buffer = np.loadtxt(FOLDER_PATH + '/replay_buffer_data/' + selected_model + 'next_state_buffer.csv', delimiter=',').reshape((self.buffer_capacity, STATE_SIZE))
 
             except:
 
@@ -1137,10 +1293,14 @@ class ReplayBuffer:
 
         """
 
-        np.savetxt(FOLDER_PATH + '/replay_buffer_data/state_buffer.csv', self.state_buffer, delimiter=',')
-        np.savetxt(FOLDER_PATH + '/replay_buffer_data/action_buffer.csv', self.action_buffer, delimiter=',')
-        np.savetxt(FOLDER_PATH + '/replay_buffer_data/reward_buffer.csv', self.reward_buffer, delimiter=',')
-        np.savetxt(FOLDER_PATH + '/replay_buffer_data/next_state_buffer.csv', self.next_state_buffer, delimiter=',')
+        global SELECTED_MODEL
+
+        selected_model = SELECTED_MODEL + '/'
+
+        np.savetxt(FOLDER_PATH + '/replay_buffer_data/' + selected_model + 'state_buffer.csv', self.state_buffer, delimiter=',')
+        np.savetxt(FOLDER_PATH + '/replay_buffer_data/' + selected_model + 'action_buffer.csv', self.action_buffer, delimiter=',')
+        np.savetxt(FOLDER_PATH + '/replay_buffer_data/' + selected_model + 'reward_buffer.csv', self.reward_buffer, delimiter=',')
+        np.savetxt(FOLDER_PATH + '/replay_buffer_data/' + selected_model + 'next_state_buffer.csv', self.next_state_buffer, delimiter=',')
 
     def record(self, observation):
 
@@ -1298,6 +1458,68 @@ def save_training_data(data, column_name, path):
 
     df.to_csv(path, index=False)
 
+def process_init_inputs():
+
+    """
+    Function for processing inital inputs for obtaining users purpose of program.
+        
+    :params:
+        None
+
+    :return:
+        None
+
+    """
+
+    global TRAINING_INDICATOR, SELECTED_MODEL, RANDOM_SPAWN, TRAINING_NAME, ACTIONS_SIZE
+
+    training_indicator = int(input('Select one option: \n \tPlay with trained model (press 0)\n \tTrain pretrained model (press 1)\n \tTrain new model (press 2)\n \tYour answer: '))
+
+    TRAINING_INDICATOR = training_indicator if training_indicator in [0, 1, 2] else 2
+
+    if TRAINING_INDICATOR in [1, 2]:
+
+        selected_model = int(input('Select model for training: \n \tOnly throttle action model (press 1)\n \tThrottle and steer actions model (press 2)\n \tYour answer: '))
+
+        SELECTED_MODEL = 'throttle_and_steer' if selected_model == 2 else 'only_throttle'
+
+        if SELECTED_MODEL == 'only_throttle':
+
+            ACTIONS_SIZE = 1
+            name_appendix = '_only_throttle'
+
+        elif SELECTED_MODEL == 'throttle_and_steer':
+
+            ACTIONS_SIZE = 2
+            name_appendix = '_throttle_and_steer'
+
+            selected_spawning_method = int(input('Select spawning method: \n \tAlways in front of goal (press 1)\n \tRandomly somewhere around goal (press 2)\n \tYour answer: '))
+
+            selected_spawning_method = selected_spawning_method if selected_spawning_method in [1, 2] else 1
+
+            if selected_spawning_method == 1:
+                name_appendix += '_in_front_goal_spawn'
+
+            elif selected_spawning_method == 2:
+                RANDOM_SPAWN = True
+                name_appendix += '_random_spawn'
+
+        training_name = str(input('Write the name of this training: \n \tYour answer: '))
+
+        TRAINING_NAME = training_name + name_appendix
+
+    else:
+
+        selected_model = int(input('Select model for playing: \n \tOnly throttle action model (press 1)\n \tThrottle and steer actions model (press 2)\n \tYour answer: '))
+
+        SELECTED_MODEL = 'throttle_and_steer' if selected_model == 2 else 'only_throttle'
+
+        if SELECTED_MODEL == 'only_throttle':
+            ACTIONS_SIZE = 1
+
+        elif SELECTED_MODEL == 'throttle_and_steer':
+            ACTIONS_SIZE = 2
+
 # ---------------------------------------------------------------------------------------------------
 # MAIN PROGRAM
 # ---------------------------------------------------------------------------------------------------
@@ -1314,179 +1536,213 @@ if __name__ == '__main__':
 
     # ----------------------- CREATING NECESSARY FOLDERS ----------------------------
     if not os.path.isdir('models'):
-        os.makedirs('models')
+        os.makedirs('models/only_throttle')
+        os.makedirs('models/throttle_and_steer')
 
     if not os.path.isdir('replay_buffer_data'):
-        os.makedirs('replay_buffer_data')
+        os.makedirs('replay_buffer_data/only_throttle')
+        os.makedirs('replay_buffer_data/throttle_and_steer')
 
-    # ---------------------- SELECTING PURPOSE OF PROGRAM ----------------------
+    if not os.path.isdir('recordings'):
+        os.makedirs('recordings/only_throttle')
+        os.makedirs('recordings/throttle_and_steer')
 
-    training_indicator = int(input('Select one option: \n \tPlay with trained model (press 0)\n \tTrain pretrained model (press 1)\n \tTrain new model (press 2)\n \tYour answer: '))
+    # ------------------- PROCESSING INITIAL INPUTS OF PROGRAM -------------------
+    process_init_inputs()
 
-    if training_indicator in [1, 2]:
-        training_name = str(input('Write the name of this training: \n \tYour answer: '))
+    # ------------ CREATING ENVIRONMENT, AGENT AND NOISE OBJECTS ----------------
+    env = CarlaEnvironment()
+    agent = DDPGAgent()
 
-    try: 
+    ou_noise_throttle = OUActionNoise(mu=np.zeros(1), sigma=0.4*np.ones(1))
+    ou_noise_steer = OUActionNoise(mu=np.zeros(1), sigma=0.3*np.ones(1))
 
-        # ------------ CREATING ENVIRONMENT, AGENT AND NOISE OBJECTS ----------------
-        env = CarlaEnvironment()
-        agent = DDPGAgent()
+    ou_noise_dict = {
+                      'throttle': ou_noise_throttle,
+                      'steer': ou_noise_steer
+                     }
 
-        ou_noise_throttle = OUActionNoise(mu=np.zeros(1), sigma=0.4*np.ones(1))
-        ou_noise_steer = OUActionNoise(mu=np.zeros(1), sigma=0.3*np.ones(1))
+    # ------------------- PLAYING RECOREDED BEST EPISODES -------------------
 
-        ou_noise_dict = {
-                          'throttle': ou_noise_throttle,
-                          'steer': ou_noise_steer
-                         }
+    if TRAINING_INDICATOR == 0:
 
-        # -------------- CREATING/LOADING ALL MODELS, CREATING REPLAY MEMORY ------------------
+        try:
 
-        actor_model = agent.get_actor()
-        critic_model = agent.get_critic()
+            print('-----------------Playing started---------------')
 
-        target_actor = agent.get_actor(model_name='_target')
-        target_critic = agent.get_critic(model_name='_target')
+            recordings, spawn_points = agent.get_recordings()
 
-        actor_optimizer = tf.keras.optimizers.Adam(ACTOR_LR)
-        critic_optimizer = tf.keras.optimizers.Adam(CRITIC_LR)
+            if not recordings:
+                print('No recordings to play')
+            else:
 
-        replay_buffer = ReplayBuffer(REPLAY_BUFFER_CAPACITY, BATCH_SIZE)
+                current_rec = 1
+                for recording, spawn_point in zip(recordings, spawn_points):
+                    _, _ = env.reset(spawn_point)
+                    print('Current recording playing: %d/%d' %(current_rec, len(recordings)), end='\r')
+                    env.play_recording(recording)
 
-        # ----------------- TRAINING PROCESS (ITERATING OVER EPISODES) ---------------------
+                    env.destroy_actors()
 
-        reward_list = []
-        step_list = []
-        episode_reward_list = []
-        average_reward_list = []
+                    current_rec += 1
 
-        if training_indicator in [1, 2]:
+                print('-----------------Playing finished---------------')
+
+        except Exception as e:
+            print('Failed to play agent recordings!')
+            print(e)
+
+    else:
+
+        try:
+
+            # -------------- CREATING/LOADING ALL MODELS, CREATING REPLAY MEMORY ------------------
+
+            actor_model = agent.get_actor()
+            critic_model = agent.get_critic()
+
+            target_actor = agent.get_actor(model_name='_target')
+            target_critic = agent.get_critic(model_name='_target')
+
+            actor_optimizer = tf.keras.optimizers.Adam(ACTOR_LR)
+            critic_optimizer = tf.keras.optimizers.Adam(CRITIC_LR)
+
+            replay_buffer = ReplayBuffer(REPLAY_BUFFER_CAPACITY, BATCH_SIZE)
+
+            # ----------------- TRAINING PROCESS (ITERATING OVER EPISODES) ---------------------
+
+            reward_list = []
+            step_list = []
+            episode_reward_list = []
+            average_reward_list = []
+
             print('-----------------Start of training process---------------')
-        else:
-            print('-----------------Start---------------')
 
-        for episode in range(1,TOTAL_EPISODES+1):
+            for episode in range(1,TOTAL_EPISODES+1):
 
-            state = env.reset()
-            episodic_reward = 0
+                state, spawn_point = env.reset()
+                episodic_reward = 0
 
-            # ----------------- ITERATING IN ONE EPISODE ---------------------
-            for step in range(1,STEPS_PER_EPISODE+1):
+                actions_list = []
 
-                # ----------------- SAMPLING AND APPLYING ACTIONS, TAKING OBSERVATIONS ---------------------
+                # ----------------- ITERATING IN ONE EPISODE ---------------------
 
-                tf_state = tf.expand_dims(tf.convert_to_tensor(state), 0)
+                for step in range(1,STEPS_PER_EPISODE+1):
 
-                actions_arr, actions_dict = agent.policy(tf_state, ou_noise_dict)
-                next_state, reward, done, info = env.step(actions_dict, step)
+                    # ----------------- SAMPLING AND APPLYING ACTIONS, TAKING OBSERVATIONS ---------------------
 
-                observation = {
-                                'state': state,
-                                'action': actions_arr,
-                                'reward': reward,
-                                'next_state': next_state
-                              }
+                    tf_state = tf.expand_dims(tf.convert_to_tensor(state), 0)
 
-                # ----------------- RECORDING CURRENT OBSERVATION ---------------------
+                    actions_arr, actions_dict = agent.policy(tf_state, ou_noise_dict)
+                    next_state, reward, done, info, record_episode = env.step(actions_dict, step)
 
-                replay_buffer.record(observation)
+                    observation = {
+                                    'state': state,
+                                    'action': actions_arr,
+                                    'reward': reward,
+                                    'next_state': next_state
+                                  }
 
-                reward_list.append(reward)
+                    actions_list.append(list(actions_dict.values()))
 
-                episodic_reward += reward
+                    # ----------------- RECORDING CURRENT OBSERVATION ---------------------
 
-                # ----------------------- LEARNING PROCESS ----------------------------
-                if training_indicator in [1, 2]:
-                    
+                    replay_buffer.record(observation)
+
+                    reward_list.append(reward)
+
+                    episodic_reward += reward
+
+                    # ----------------------- LEARNING PROCESS ----------------------------
+                        
                     replay_buffer.learn()
 
                     # -------------------- UPDATING TARGET MODELS -------------------------
                     update_target(target_actor.variables, actor_model.variables)
                     update_target(target_critic.variables, critic_model.variables)
+                    
+                    # ------------ EPISODE TERMINATION / TRANSITION -------------
+                    if done:
+                        break
+                    else:
+                        print('Current step: %d/%d <<<>>> %s' %(step, STEPS_PER_EPISODE, info), end='\r')
 
+                    # -------------- RECORDING EPISODE IF IT IS GOOD -----------------
 
-                if not done:
-                    print('Current step: %d/%d <<<>>> %s' %(step, STEPS_PER_EPISODE, info), end='\r')
+                    if record_episode and episodic_reward >= 100:
+                        agent.save_recording(actions_list, episode, spawn_point)
 
-                # ------------ EPISODE TERMINATION / TRANSITION -------------
-                if done:
-                    break
+                    state = next_state
 
-                state = next_state
+                env.destroy_actors()
 
-            env.destroy_actors()
+                if not step_list:
+                    step_list.append(step)
+                else:
+                    step_list.append(step_list[-1]+step)
 
-            if not step_list:
-                step_list.append(step)
-            else:
-                step_list.append(step_list[-1]+step)
+                # ----------------------- STORING REWARDS ----------------------------
 
-            # ----------------------- STORING REWARDS ----------------------------
+                episode_reward_list.append(episodic_reward)
+                average_reward = np.mean(episode_reward_list[-AVERAGE_EPISODES_COUNT:])
+                average_reward_list.append(average_reward)
 
-            episode_reward_list.append(episodic_reward)
-            average_reward = np.mean(episode_reward_list[-AVERAGE_EPISODES_COUNT:])
-            average_reward_list.append(average_reward)
+                print('Episode * {} * Episodic Reward is ==> {} <<<>>> {}'.format(episode, episodic_reward, info))            
 
-            print('Episode * {} * Episodic Reward is ==> {} <<<>>> {}'.format(episode, episodic_reward, info))            
-
-        if training_indicator in [1, 2]:
             print('-----------------End of training process---------------')
 
             # ----------------------- SAVING MODELS ----------------------------
 
-            actor_model.save_weights('models/parking_agent_actor.h5')
-            critic_model.save_weights('models/parking_agent_critic.h5')
+            selected_model = SELECTED_MODEL + '/'
 
-            target_actor.save_weights('models/parking_agent_target_actor.h5')
-            target_critic.save_weights('models/parking_agent_target_critic.h5')
+            actor_model.save_weights('models/' + selected_model + 'parking_agent_actor.h5')
+            critic_model.save_weights('models/' + selected_model + 'parking_agent_critic.h5')
+
+            target_actor.save_weights('models/' + selected_model + 'parking_agent_target_actor.h5')
+            target_critic.save_weights('models/' + selected_model + 'parking_agent_target_critic.h5')
 
 
             # ----------------------- SAVING TRAINING DATA ----------------------------
 
             save_training_data(data=reward_list,
                                column_name='reward',
-                               path=FOLDER_PATH + '/training_data/data/'+training_name+'_rewards.csv')
+                               path=FOLDER_PATH + '/training_data/data/'+TRAINING_NAME+'_rewards.csv')
 
             save_training_data(data=step_list,
                                column_name='step',
-                               path=FOLDER_PATH + '/training_data/data/'+training_name+'_steps.csv')
+                               path=FOLDER_PATH + '/training_data/data/'+TRAINING_NAME+'_steps.csv')
 
             save_training_data(data=episode_reward_list,
                                column_name='episodic_reward',
-                               path=FOLDER_PATH + '/training_data/data/'+training_name+'_episodic_rewards.csv')
+                               path=FOLDER_PATH + '/training_data/data/'+TRAINING_NAME+'_episodic_rewards.csv')
 
             save_training_data(data=average_reward_list,
                                column_name='average_reward',
-                               path=FOLDER_PATH + '/training_data/data/'+training_name+'_average_episodic_rewards.csv')
+                               path=FOLDER_PATH + '/training_data/data/'+TRAINING_NAME+'_average_episodic_rewards.csv')
 
             replay_buffer.save_buffer()
 
-        else:
-            print('-----------------End---------------')
+        # ----------------------- CATCHING EXCEPTIONS DURING TRAINING ----------------------------
+        except Exception as e:
+            
+            if TRAINING_INDICATOR == 1:
 
+                # ----------------------- SAVING TERMINATED MODELS IN OLD ONES ----------------------------
 
-    # ----------------------- CATCHING EXCEPTIONS DURING TRAINING ----------------------------
-    except :
-        
-        if training_indicator == 1:
+                actor_model.save_weights('models/parking_agent_actor.h5')
+                critic_model.save_weights('models/parking_agent_critic.h5')
 
-            # ----------------------- SAVING TERMINATED MODELS IN OLD ONES ----------------------------
+                target_actor.save_weights('models/parking_agent_target_actor.h5')
+                target_critic.save_weights('models/parking_agent_target_critic.h5')
 
-            actor_model.save_weights('models/parking_agent_actor.h5')
-            critic_model.save_weights('models/parking_agent_critic.h5')
+            elif TRAINING_INDICATOR == 2:
 
-            target_actor.save_weights('models/parking_agent_target_actor.h5')
-            target_critic.save_weights('models/parking_agent_target_critic.h5')
+                # ----------------------- SAVING TERMINATED MODELS ----------------------------.
 
-        if training_indicator == 2:
+                actor_model.save_weights('models/parking_agent_actor_terminated.h5')
+                critic_model.save_weights('models/parking_agent_critic_terminated.h5')
 
-            # ----------------------- SAVING TERMINATED MODELS ----------------------------.
+                target_actor.save_weights('models/parking_agent_target_actor_terminated.h5')
+                target_critic.save_weights('models/parking_agent_target_critic_terminated.h5')
 
-            actor_model.save_weights('models/parking_agent_actor_terminated.h5')
-            critic_model.save_weights('models/parking_agent_critic_terminated.h5')
-
-            target_actor.save_weights('models/parking_agent_target_actor_terminated.h5')
-            target_critic.save_weights('models/parking_agent_target_critic_terminated.h5')
-
-        else:
-            pass
+            print(e)
