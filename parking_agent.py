@@ -56,7 +56,7 @@ SIGMA = 2.0
 # ---------------------------------------------------------------------------------------------------
 MEMORY_FRACTION = 0.3333
 
-TOTAL_EPISODES = 10000 # 10000
+TOTAL_EPISODES = 2000 # 10000
 STEPS_PER_EPISODE = 100
 AVERAGE_EPISODES_COUNT = 40
 
@@ -411,7 +411,7 @@ class CarlaEnvironment:
                 spawn_point = self.random_spawn('random_entrance')
 
             else:
-                spawn_point = carla.Transform(carla.Location(x=17.2, y=-29.7, z=self.spawning_z_offset), carla.Rotation(yaw=180.0))
+                spawn_point = carla.Transform(carla.Location(x=17.2, y=-29.7, z=self.spawning_z_offset), carla.Rotation(yaw=random.choice([0.0, 180.0])))
 
         self.vehicle = self.world.spawn_actor(self.model_3, spawn_point)
         self.actor_list.append(self.vehicle)
@@ -848,12 +848,23 @@ class CarlaEnvironment:
         # reward += self.get_convergence_penalty(current_step)
 
         if SELECTED_MODEL == 'only_throttle' and not RANDOM_SPAWN: 
-            if (reverse == True) and (distance > 2) and (current_state_dict['x_rel'] < 0):
-                if reward > 0 :
-                    reward *= -1.0
-            elif (reverse == False) and (distance > 2) and (current_state_dict['x_rel'] > 0):
-                if reward > 0 :
-                    reward *= -1.0
+            if current_state_dict['angle'] <= 10.0 and current_state_dict['angle'] >= 350.0: # agent should go back for goal
+
+                if (reverse == False) and (distance > 2) and (current_state_dict['x_rel'] < 0):
+                        if reward > 0 :
+                            reward *= -1.0
+                elif (reverse == True) and (distance > 2) and (current_state_dict['x_rel'] > 0):
+                        if reward > 0 :
+                            reward *= -1.0
+
+            else: # agent should go back for goal
+
+                if (reverse == True) and (distance > 2) and (current_state_dict['x_rel'] < 0):
+                    if reward > 0 :
+                        reward *= -1.0
+                elif (reverse == False) and (distance > 2) and (current_state_dict['x_rel'] > 0):
+                    if reward > 0 :
+                        reward *= -1.0
 
         return current_state, reward, done, info, record_episode
 
@@ -1579,7 +1590,7 @@ if __name__ == '__main__':
                 current_rec = 1
                 for recording, spawn_point in zip(recordings, spawn_points):
                     _, _ = env.reset(spawn_point)
-                    print('Current recording playing: %d/%d' %(current_rec, len(recordings)), end='\r')
+                    print('Current playing: %d/%d' %(current_rec, len(recordings)), end='\r')
                     env.play_recording(recording)
 
                     env.destroy_actors()
@@ -1669,7 +1680,7 @@ if __name__ == '__main__':
 
                     # -------------- RECORDING EPISODE IF IT IS GOOD -----------------
 
-                    if record_episode and episodic_reward >= 100:
+                    if record_episode or episodic_reward >= 100:
                         agent.save_recording(actions_list, episode, spawn_point)
 
                     state = next_state
