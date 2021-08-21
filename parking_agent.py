@@ -848,7 +848,7 @@ class CarlaEnvironment:
         # reward += self.get_convergence_penalty(current_step)
 
         if SELECTED_MODEL == 'only_throttle' and not RANDOM_SPAWN: 
-            if current_state_dict['angle'] <= 10.0 and current_state_dict['angle'] >= 350.0: # agent should go back for goal
+            if current_state_dict['angle'] in [0.0, 360.0]  : # agent should go back for goal
 
                 if (reverse == False) and (distance > 2) and (current_state_dict['x_rel'] < 0):
                         if reward > 0 :
@@ -1219,9 +1219,8 @@ class DDPGAgent:
                 recordings.append(rec)
 
                 df = pd.read_csv(os.path.join(path, episode_number + '_spawn_point.csv'))
-                data = df.to_numpy()
 
-                spawn_point = carla.Transform(carla.Location(x=data[0][0], y=data[0][1], z=data[0][2]), carla.Rotation(yaw=data[0][3]))
+                spawn_point = carla.Transform(carla.Location(x=df['x'][0], y=df['y'][0], z=df['z'][0]), carla.Rotation(yaw=df['yaw'][0]))
                 spawn_points.append(spawn_point)
                  
             else:
