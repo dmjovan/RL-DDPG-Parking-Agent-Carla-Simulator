@@ -56,11 +56,11 @@ SIGMA = 2.0
 # ---------------------------------------------------------------------------------------------------
 MEMORY_FRACTION = 0.3333
 
-TOTAL_EPISODES = 2000 # 10000
+TOTAL_EPISODES = 1000 
 STEPS_PER_EPISODE = 100
 AVERAGE_EPISODES_COUNT = 40
 
-CORRECT_POSITION_NON_MOVING_STEPS = 2 #5
+CORRECT_POSITION_NON_MOVING_STEPS = 2 
 OFF_POSITION_NON_MOVING_STEPS = 10
 
 REPLAY_BUFFER_CAPACITY = 100000
@@ -678,22 +678,6 @@ class CarlaEnvironment:
 
         return vehicle_parked
 
-    def get_convergence_penalty(self, current_step):
-
-        """
-        Function for calculating convergence penalty for faster convergence of agent.
-            
-        :params:
-            - current_step: value of current step over one episode
-
-        :return:
-            - convergence_penalty: penalty for faster convergence of agent (values are from 0 to 1)
-
-        """
-
-        convergence_penalty = -current_step/STEPS_PER_EPISODE
-        return convergence_penalty
-
     def calculate_reward(self, distance, angle, d_val_1=2, mode='gauss'):
 
         """
@@ -845,9 +829,10 @@ class CarlaEnvironment:
             done = False
             info = 'Agent still learning :)' 
 
-        # reward += self.get_convergence_penalty(current_step)
+        # ------------------- ADDITIONAL NEGATIVE REWARDS FOR ONLY THROTTLE MODEL ---------------------
 
         if SELECTED_MODEL == 'only_throttle' and not RANDOM_SPAWN: 
+
             if current_state_dict['angle'] in [0.0, 360.0]  : # agent should go back for goal
 
                 if (reverse == False) and (distance > 2) and (current_state_dict['x_rel'] < 0):
@@ -860,11 +845,10 @@ class CarlaEnvironment:
             else: # agent should go back for goal
 
                 if (reverse == True) and (distance > 2) and (current_state_dict['x_rel'] < 0):
-                    if reward > 0 :
-                        reward *= -1.0
+                    reward = -1.0*reward if reward > 0 else reward
+
                 elif (reverse == False) and (distance > 2) and (current_state_dict['x_rel'] > 0):
-                    if reward > 0 :
-                        reward *= -1.0
+                    reward = -1.0*reward if reward > 0 else reward
 
         return current_state, reward, done, info, record_episode
 
@@ -1446,7 +1430,7 @@ def update_target(target_weights, actual_weights):
     for (a, b) in zip(target_weights, actual_weights):
         a.assign(b * TAU + a * (1 - TAU))
 
-def save_training_data(data, column_name, path):
+def save_training_data(data, column_name, file_name):
 
     """
     Function for saving training data into .csv file.
@@ -1454,12 +1438,17 @@ def save_training_data(data, column_name, path):
     :params:
         - data: list of floats
         - column_name: name of the column (data name)
-        - path: path to save data 
+        - file_name: file where data is saved
 
     :return:
         None
 
     """
+
+    if not os.path.isdir('training_data/data/' + TRAINING_NAME):
+        os.makedirs('training_data/data/' + TRAINING_NAME)
+
+    path = FOLDER_PATH + '/training_data/data/' + TRAINING_NAME + '/' + file_name
 
     d = {column_name: data}
 
@@ -1481,13 +1470,18 @@ def process_init_inputs():
 
     """
 
-    global TRAINING_INDICATOR, SELECTED_MODEL, RANDOM_SPAWN, TRAINING_NAME, ACTIONS_SIZE
+    global TRAINING_INDICATOR, SELECTED_MODEL, RANDOM_SPAWN, TRAINING_NAME, ACTIONS_SIZE, TOTAL_EPISODES
 
     training_indicator = int(input('Select one option: \n \tPlay with trained model (press 0)\n \tTrain pretrained model (press 1)\n \tTrain new model (press 2)\n \tYour answer: '))
 
     TRAINING_INDICATOR = training_indicator if training_indicator in [0, 1, 2] else 2
 
     if TRAINING_INDICATOR in [1, 2]:
+
+        total_episodes = input('Enter the number of total episodes (for default [1000] press Enter):\n \tYour answer: ')
+        
+        if total_episodes and int(total_episodes) > TOTAL_EPISODES:
+            TOTAL_EPISODES = int(total_episodes)
 
         selected_model = int(input('Select model for training: \n \tOnly throttle action model (press 1)\n \tThrottle and steer actions model (press 2)\n \tYour answer: '))
 
@@ -1714,21 +1708,10 @@ if __name__ == '__main__':
 
             # ----------------------- SAVING TRAINING DATA ----------------------------
 
-            save_training_data(data=reward_list,
-                               column_name='reward',
-                               path=FOLDER_PATH + '/training_data/data/'+TRAINING_NAME+'_rewards.csv')
-
-            save_training_data(data=step_list,
-                               column_name='step',
-                               path=FOLDER_PATH + '/training_data/data/'+TRAINING_NAME+'_steps.csv')
-
-            save_training_data(data=episode_reward_list,
-                               column_name='episodic_reward',
-                               path=FOLDER_PATH + '/training_data/data/'+TRAINING_NAME+'_episodic_rewards.csv')
-
-            save_training_data(data=average_reward_list,
-                               column_name='average_reward',
-                               path=FOLDER_PATH + '/training_data/data/'+TRAINING_NAME+'_average_episodic_rewards.csv')
+            save_training_data(data=reward_list, column_name='rewards', file_name='rewards.csv')
+            save_training_data(data=step_list, column_name='step', file_name='steps.csv')
+            save_training_data(data=episode_reward_list, column_name='episodic_reward', file_name='episodic_rewards.csv')
+            save_training_data(data=average_reward_list, column_name='average_reward', file_name='average_episodic_rewards.csv')
 
             replay_buffer.save_buffer()
 
