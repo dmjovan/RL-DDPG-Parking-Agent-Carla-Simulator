@@ -41,24 +41,6 @@ df_rows = {
 			# orientation of center of goal parking spot - angle in degrees
 			'go': 'goal_orientation',
 
-			# corners of parking spot on the left side of goal parking spot - x and y coordinates
-			'ldl': 'left_down_left',
-			'ldr': 'left_down_right',
-			'lul': 'left_upper_left',
-			'lur': 'left_upper_right',
-
-			# orientation of center of parking spot on the left side of goal parking spot - angle in degrees
-			'lo': 'left_orientation',
-
-			# corners of parking spot on the right side of goal parking spot - x and y coordinates
-			'rdl': 'right_down_left',
-			'rdr': 'right_down_right',
-			'rul': 'right_upper_left',
-			'rur': 'right_upper_right',
-
-			# orientation of center of parking spot on the right side of goal parking spot - angle in degrees
-			'ro': 'right_orientation',
-
 			# spectator row with all fields
 			'spec': 'spectator'
 
@@ -121,7 +103,6 @@ Program for tracking (gathering position info) SPECTATOR in Carla simulator
 
 Goals of this program - running as independent script:
 - getting coordinates of corners and orientation of goal parking spot in world coordinates
-- getting coordinates of corners and orientation of 2 parking spots on left/right side of goal parking spot (if posible)
 - getting coordinates and orientation of spectator camera, to be set in main script for proprior look while training
 
 """

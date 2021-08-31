@@ -36,8 +36,6 @@ _SLEEP_TIME_ = 0.5
 FOLDER_PATH = os.getcwd()
 MAP_CSV_PATH = FOLDER_PATH + '/parking_map.csv'
 
-OTHER_VEHICLES_AVAILABLE = False
-
 TRAINING_INDICATOR = 2
 SELECTED_MODEL = 'only_throttle'
 RANDOM_SPAWN = False
@@ -124,8 +122,8 @@ class CarlaEnvironment:
             None
 
         :return:
-            - parking_map: dictionary with 3 specific carla.Transform objects for
-                           goal, left of the goal and right of the goal parking spot
+            - parking_map: dictionary with 4 specific carla.Location objects for corners of goal parking spot
+                           and one carla.Transform object for center of goal parking spotv
 
             - spectator_transform: carla.Transform object with location and rotation of 
                                    spectator camera
@@ -148,42 +146,6 @@ class CarlaEnvironment:
 
         goal_parking_spot = carla.Transform(carla.Location(x=goal_center_x, y=goal_center_y), carla.Rotation(yaw=goal_rotation))
 
-        # --------------------------- PARKING SPOT ON LEFT -----------------------------------
-
-        left_down_left_x, left_down_left_y = df.loc['left_down_left', 'x':'y'].to_numpy()
-        left_upper_left_x, left_upper_left_y = df.loc['left_upper_left', 'x':'y'].to_numpy()
-        left_upper_right_x, left_upper_right_y = df.loc['left_upper_right', 'x':'y'].to_numpy()
-        left_down_right_x, left_down_right_y = df.loc['left_down_right', 'x':'y'].to_numpy()
-
-        if np.isnan(left_down_right_x): 
-            left_parking_spot = None
-        else:
-            # center of parking spot on left side of target parking spot 
-            left_center_x = (left_down_left_x + left_upper_left_x + left_upper_right_x + left_down_right_x)/4.0
-            left_center_y = (left_down_left_y + left_upper_left_y + left_upper_right_y + left_down_right_y)/4.0
-            left_rotation = df.loc['left_orientation','yaw']
-
-            left_parking_spot = carla.Transform(carla.Location(x=left_center_x, y=left_center_y, z=self.spawning_z_offset),
-                                                carla.Rotation(yaw = left_rotation))
-
-        # --------------------------- PARKING SPOT ON RIGHT ---------------------------------
-
-        right_down_left_x, right_down_left_y = df.loc['right_down_left', 'x':'y'].to_numpy()
-        right_upper_left_x, right_upper_left_y = df.loc['right_upper_left', 'x':'y'].to_numpy()
-        right_upper_right_x, right_upper_right_y = df.loc['right_upper_right', 'x':'y'].to_numpy()
-        right_down_right_x, right_down_right_y = df.loc['right_down_right', 'x':'y'].to_numpy()
-
-        if np.isnan(right_down_left_x):
-            right_parking_spot = None
-        else:
-            # center of parking spot on right side of target parking spot 
-            right_center_x = (right_down_left_x + right_upper_left_x + right_upper_right_x + right_down_right_x)/4.0
-            right_center_y = (right_down_left_y + right_upper_left_y + right_upper_right_y + right_down_right_y)/4.0
-            right_rotation = df.loc['right_orientation','yaw'] 
-
-            right_parking_spot = carla.Transform(carla.Location(x=right_center_x, y=right_center_y, z=self.spawning_z_offset),
-                                                 carla.Rotation(yaw=right_rotation))
-
         # --------------------------- SPECTATOR CAMERA TRANSFORM ------------------------------
 
         spec_x, spec_y, spec_z, spec_yaw, spec_pitch, spec_roll = df.loc['spectator'].to_numpy()
@@ -197,9 +159,7 @@ class CarlaEnvironment:
                        'goal_upper_left'    : carla.Location(x=goal_upper_left_x, y=goal_upper_left_y, z=0.2),
                        'goal_upper_right'   : carla.Location(x=goal_upper_right_x, y=goal_upper_right_y, z=0.2),
                        'goal_down_right'    : carla.Location(x=goal_down_right_x, y=goal_down_right_y, z=0.2),
-                       'goal_parking_spot'  : goal_parking_spot,
-                       'left_parking_spot'  : left_parking_spot,
-                       'right_parking_spot' : right_parking_spot
+                       'goal_parking_spot'  : goal_parking_spot
                       }
 
         return parking_map, spectator_transform
@@ -417,19 +377,6 @@ class CarlaEnvironment:
         self.actor_list.append(self.vehicle)
         self.vehicle.apply_control(carla.VehicleControl(throttle=0.0, brake=0.0))
         time.sleep(_SLEEP_TIME_)
-
-        # ------------------------------ SPAWNING OTHER NON-MOVING VEHICLES ----------------------------------
-        if OTHER_VEHICLES_AVAILABLE:
-
-            if self.parking_map['left_parking_spot'] != None:
-                self.vehicle_left = self.world.spawn_actor(self.model_3, self.parking_map['left_parking_spot'])
-                self.actor_list.append(self.vehicle_left)
-                self.vehicle_left.apply_control(carla.VehicleControl(throttle=0.0, brake=0.0))
-
-            if self.parking_map['right_parking_spot'] != None:
-                self.vehicle_right = self.world.spawn_actor(self.model_3, self.parking_map['right_parking_spot'])
-                self.actor_list.append(self.vehicle_right)
-                self.vehicle_right.apply_control(carla.VehicleControl(throttle=0.0, brake=0.0))
 
         # ------------------------------ COLLISION SENSOR  ----------------------------------
 
@@ -987,8 +934,7 @@ class DDPGAgent:
         global TRAINING_INDICATOR, SELECTED_MODEL
 
         stopped = '_terminated' if terminated else ''
-        selected_model = SELECTED_MODEL + '/'
-        model_weights_file_name = 'models/' + selected_model + 'parking_agent'+ model_name + '_actor'  + stopped + '.h5'
+        model_weights_file_name = 'models/' + SELECTED_MODEL + '/parking_agent'+ model_name + '_actor'  + stopped + '.h5'
 
         # ----------------------- CONSTRUCTING ACTOR MODEL ----------------------------
 
@@ -1033,8 +979,7 @@ class DDPGAgent:
         global TRAINING_INDICATOR, SELECTED_MODEL
 
         stopped = '_terminated' if terminated else ''
-        selected_model = SELECTED_MODEL + '/'
-        model_weights_file_name = 'models/' + selected_model + 'parking_agent'+ model_name +'_critic' + stopped + '.h5'
+        model_weights_file_name = 'models/' + SELECTED_MODEL + '/parking_agent'+ model_name +'_critic' + stopped + '.h5'
 
         # ----------------------- CONSTRUCTING CRITIC MODEL ----------------------------
 
@@ -1153,10 +1098,8 @@ class DDPGAgent:
 
         global SELECTED_MODEL
 
-        selected_model = SELECTED_MODEL + '/'
-
         actions = np.array(actions_list).reshape((len(actions_list), 2))
-        np.savetxt(FOLDER_PATH + '/recordings/' + selected_model + str(episode) + '.csv', actions, delimiter=',')
+        np.savetxt(FOLDER_PATH + '/recordings/' + SELECTED_MODEL + '/' + str(episode) + '.csv', actions, delimiter=',')
 
         d = {
              'x'  : [spawn_point.location.x],
@@ -1168,7 +1111,7 @@ class DDPGAgent:
         df = pd.DataFrame(d)
         df.dtype = 'float32'
 
-        df.to_csv(FOLDER_PATH + '/recordings/' + selected_model + str(episode) + '_spawn_point.csv', index=False)
+        df.to_csv(FOLDER_PATH + '/recordings/' + SELECTED_MODEL + '/' + str(episode) + '_spawn_point.csv', index=False)
 
     def get_recordings(self):
 
@@ -1233,8 +1176,6 @@ class ReplayBuffer:
 
         global TRAINING_INDICATOR, SELECTED_MODEL
 
-        selected_model = SELECTED_MODEL + '/'
-
         self.batch_size = batch_size
         self.buffer_counter = 0
 
@@ -1242,7 +1183,7 @@ class ReplayBuffer:
 
             try:
 
-                self.state_buffer = np.loadtxt(FOLDER_PATH + '/replay_buffer_data/' + selected_model + 'state_buffer.csv', delimiter=',')
+                self.state_buffer = np.loadtxt(FOLDER_PATH + '/replay_buffer_data/' + SELECTED_MODEL + '/state_buffer.csv', delimiter=',')
 
                 if self.state_buffer.shape[0] < buffer_capacity:
                     self.buffer_capacity = buffer_capacity
@@ -1252,9 +1193,9 @@ class ReplayBuffer:
                     self.buffer_counter = 0
 
                 self.state_buffer = self.state_buffer.reshape((self.buffer_capacity, STATE_SIZE))
-                self.action_buffer = np.loadtxt(FOLDER_PATH + '/replay_buffer_data/' + selected_model + 'action_buffer.csv', delimiter=',').reshape((self.buffer_capacity, ACTIONS_SIZE))
-                self.reward_buffer = np.loadtxt(FOLDER_PATH + '/replay_buffer_data/' + selected_model + 'reward_buffer.csv', delimiter=',').reshape((self.buffer_capacity, 1))
-                self.next_state_buffer = np.loadtxt(FOLDER_PATH + '/replay_buffer_data/' + selected_model + 'next_state_buffer.csv', delimiter=',').reshape((self.buffer_capacity, STATE_SIZE))
+                self.action_buffer = np.loadtxt(FOLDER_PATH + '/replay_buffer_data/' + SELECTED_MODEL + '/action_buffer.csv', delimiter=',').reshape((self.buffer_capacity, ACTIONS_SIZE))
+                self.reward_buffer = np.loadtxt(FOLDER_PATH + '/replay_buffer_data/' + SELECTED_MODEL + '/reward_buffer.csv', delimiter=',').reshape((self.buffer_capacity, 1))
+                self.next_state_buffer = np.loadtxt(FOLDER_PATH + '/replay_buffer_data/' + SELECTED_MODEL + '/next_state_buffer.csv', delimiter=',').reshape((self.buffer_capacity, STATE_SIZE))
 
             except:
 
@@ -1289,12 +1230,10 @@ class ReplayBuffer:
 
         global SELECTED_MODEL
 
-        selected_model = SELECTED_MODEL + '/'
-
-        np.savetxt(FOLDER_PATH + '/replay_buffer_data/' + selected_model + 'state_buffer.csv', self.state_buffer, delimiter=',')
-        np.savetxt(FOLDER_PATH + '/replay_buffer_data/' + selected_model + 'action_buffer.csv', self.action_buffer, delimiter=',')
-        np.savetxt(FOLDER_PATH + '/replay_buffer_data/' + selected_model + 'reward_buffer.csv', self.reward_buffer, delimiter=',')
-        np.savetxt(FOLDER_PATH + '/replay_buffer_data/' + selected_model + 'next_state_buffer.csv', self.next_state_buffer, delimiter=',')
+        np.savetxt(FOLDER_PATH + '/replay_buffer_data/' + SELECTED_MODEL + '/state_buffer.csv', self.state_buffer, delimiter=',')
+        np.savetxt(FOLDER_PATH + '/replay_buffer_data/' + SELECTED_MODEL + '/action_buffer.csv', self.action_buffer, delimiter=',')
+        np.savetxt(FOLDER_PATH + '/replay_buffer_data/' + SELECTED_MODEL + '/reward_buffer.csv', self.reward_buffer, delimiter=',')
+        np.savetxt(FOLDER_PATH + '/replay_buffer_data/' + SELECTED_MODEL + '/next_state_buffer.csv', self.next_state_buffer, delimiter=',')
 
     def record(self, observation):
 
@@ -1602,8 +1541,8 @@ if __name__ == '__main__':
 
             # -------------- CREATING/LOADING ALL MODELS, CREATING REPLAY MEMORY ------------------
 
-            actor_model = agent.get_actor()
-            critic_model = agent.get_critic()
+            actor_model = agent.get_actor(show_summary=True)
+            critic_model = agent.get_critic(show_summary=True)
 
             target_actor = agent.get_actor(model_name='_target')
             target_critic = agent.get_critic(model_name='_target')
@@ -1673,7 +1612,9 @@ if __name__ == '__main__':
 
                     # -------------- RECORDING EPISODE IF IT IS GOOD -----------------
 
-                    if record_episode or episodic_reward >= 100:
+                    episodic_reward_threshold = 100 if SELECTED_MODEL == 'only_throttle' else 50
+
+                    if record_episode or episodic_reward >= episodic_reward_threshold:
                         agent.save_recording(actions_list, episode, spawn_point)
 
                     state = next_state
@@ -1697,13 +1638,11 @@ if __name__ == '__main__':
 
             # ----------------------- SAVING MODELS ----------------------------
 
-            selected_model = SELECTED_MODEL + '/'
+            actor_model.save_weights('models/' + SELECTED_MODEL + '/parking_agent_actor.h5')
+            critic_model.save_weights('models/' + SELECTED_MODEL + '/parking_agent_critic.h5')
 
-            actor_model.save_weights('models/' + selected_model + 'parking_agent_actor.h5')
-            critic_model.save_weights('models/' + selected_model + 'parking_agent_critic.h5')
-
-            target_actor.save_weights('models/' + selected_model + 'parking_agent_target_actor.h5')
-            target_critic.save_weights('models/' + selected_model + 'parking_agent_target_critic.h5')
+            target_actor.save_weights('models/' + SELECTED_MODEL + '/parking_agent_target_actor.h5')
+            target_critic.save_weights('models/' + SELECTED_MODEL + '/parking_agent_target_critic.h5')
 
 
             # ----------------------- SAVING TRAINING DATA ----------------------------
@@ -1722,20 +1661,20 @@ if __name__ == '__main__':
 
                 # ----------------------- SAVING TERMINATED MODELS IN OLD ONES ----------------------------
 
-                actor_model.save_weights('models/parking_agent_actor.h5')
-                critic_model.save_weights('models/parking_agent_critic.h5')
+                actor_model.save_weights('models/' + SELECTED_MODEL + '/parking_agent_actor.h5')
+                critic_model.save_weights('models/' + SELECTED_MODEL + '/parking_agent_critic.h5')
 
-                target_actor.save_weights('models/parking_agent_target_actor.h5')
-                target_critic.save_weights('models/parking_agent_target_critic.h5')
+                target_actor.save_weights('models/' + SELECTED_MODEL + '/parking_agent_target_actor.h5')
+                target_critic.save_weights('models/' + SELECTED_MODEL + '/parking_agent_target_critic.h5')
 
             elif TRAINING_INDICATOR == 2:
 
                 # ----------------------- SAVING TERMINATED MODELS ----------------------------.
 
-                actor_model.save_weights('models/parking_agent_actor_terminated.h5')
-                critic_model.save_weights('models/parking_agent_critic_terminated.h5')
+                actor_model.save_weights('models/' + SELECTED_MODEL + '/parking_agent_actor_terminated.h5')
+                critic_model.save_weights('models/' + SELECTED_MODEL + '/parking_agent_critic_terminated.h5')
 
-                target_actor.save_weights('models/parking_agent_target_actor_terminated.h5')
-                target_critic.save_weights('models/parking_agent_target_critic_terminated.h5')
+                target_actor.save_weights('models/' + SELECTED_MODEL + '/parking_agent_target_actor_terminated.h5')
+                target_critic.save_weights('models/' + SELECTED_MODEL + '/parking_agent_target_critic_terminated.h5')
 
             print(e)
