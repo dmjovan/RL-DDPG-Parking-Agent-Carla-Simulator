@@ -1204,7 +1204,7 @@ class DDPGAgent:
 
                 df = pd.read_csv(os.path.join(path, episode_number + '_spawn_point.csv'))
 
-                spawn_point = carla.Transform(carla.Location(x=df['x'][0], y=df['y'][0], z=df['z'][0]), carla.Rotation(yaw=df['yaw'][0]))
+                spawn_point = carla.Transform(carla.Location(x=float(df['x'][0]), y=float(df['y'][0]), z=float(df['z'][0])), carla.Rotation(yaw=float(df['yaw'][0])))
                 spawn_points.append(spawn_point)
                  
             else:
