@@ -38,8 +38,8 @@ MAP_CSV_PATH = FOLDER_PATH + '/parking_map.csv'
 
 TRAINING_INDICATOR = 2
 SELECTED_MODEL = 'only_throttle'
-RANDOM_SPAWN = False
 TRAINING_NAME = 'training'
+SELECTED_SPAWNING_METHOD = 0
 
 ACTIONS_SIZE = 1
 STATE_SIZE = 16
@@ -367,7 +367,7 @@ class CarlaEnvironment:
 
         if spawn_point == None:
 
-            if RANDOM_SPAWN :
+            if SELECTED_SPAWNING_METHOD == 1 :
                 spawn_point = self.random_spawn('random_entrance')
 
             else:
@@ -434,11 +434,12 @@ class CarlaEnvironment:
         self.vehicle.apply_control(carla.VehicleControl(throttle=0.0, brake=0.0))
         current_state, current_state_dict = self.get_current_state()
 
-        self.last_distance_to_goal = current_state_dict['distance_to_goal'] 
-        self.distance_to_goal = self.last_distance_to_goal
+        self.last_distance_to_goal = None
+        self.distance_to_goal = current_state_dict['distance_to_goal'] 
+        self.initial_distance = self.distance_to_goal
         
-        self.last_angle = current_state_dict['angle'] 
-        self.angle = self.last_angle
+        self.last_angle = None
+        self.angle = current_state_dict['angle'] 
 
         self.non_moving_steps_cnt = 0
 
@@ -711,7 +712,10 @@ class CarlaEnvironment:
             - reward: reward value for taken actions
             - done: boolean value, indicating if current episode is finished because of bad behavior of agent, or not
             - info: information of this step taken
-            - record_episode: boolean value indicating if this episode should be recorded or not
+            - record_episode: integer from set {-1, 0, 1}: -1 - agent is not parked the best, but if episodic reward if great, then record
+                                                            0 - agent has not moved from start of episode, because it is near goal, do not record
+                                                            1 - agent is parked well, record it
+
 
         """
 
@@ -737,7 +741,7 @@ class CarlaEnvironment:
         self.angle = angle
 
         done = False
-        record_episode = False
+        record_episode = -1
 
         correct_position_stagnating, off_position_stagnating = self.check_non_movement()
 
@@ -763,13 +767,22 @@ class CarlaEnvironment:
         elif correct_position_stagnating == True:
             reward = 1000
             done = True 
-            record_episode = True
             info = 'Great job! Agent parked! :D' 
+
+            if abs(self.initial_distance - distance) > 0.1:
+                record_episode = 1
+            else:
+                record_episode = 0
 
         elif off_position_stagnating == True:
             reward = 0
             done = True 
             info = 'Agent stayed for to long off goal position (distance = ' + str(distance) +'):/' 
+
+            if abs(self.initial_distance - distance) > 0.1:
+                record_episode = -1
+            else:
+                record_episode = 0
 
         else:
             reward = self.calculate_reward(distance, angle, mode='lin')
@@ -778,7 +791,7 @@ class CarlaEnvironment:
 
         # ------------------- ADDITIONAL NEGATIVE REWARDS FOR ONLY THROTTLE MODEL ---------------------
 
-        if SELECTED_MODEL == 'only_throttle' and not RANDOM_SPAWN: 
+        if SELECTED_MODEL == 'only_throttle' and SELECTED_SPAWNING_METHOD == 0: 
 
             if current_state_dict['angle'] in [0.0, 360.0]  : # agent should go back for goal
 
@@ -1096,10 +1109,13 @@ class DDPGAgent:
 
         """
 
-        global SELECTED_MODEL
+        global SELECTED_MODEL, SELECTED_SPAWNING_METHOD
+
+            
+        spawn = 'in_front_goal_spawn' if SELECTED_SPAWNING_METHOD == 0 else 'random_spawn'
 
         actions = np.array(actions_list).reshape((len(actions_list), 2))
-        np.savetxt(FOLDER_PATH + '/recordings/' + SELECTED_MODEL + '/' + str(episode) + '.csv', actions, delimiter=',')
+        np.savetxt(FOLDER_PATH + '/recordings/' + SELECTED_MODEL + '/' + spawn + '/' + str(episode) + '.csv', actions, delimiter=',')
 
         d = {
              'x'  : [spawn_point.location.x],
@@ -1111,7 +1127,7 @@ class DDPGAgent:
         df = pd.DataFrame(d)
         df.dtype = 'float32'
 
-        df.to_csv(FOLDER_PATH + '/recordings/' + SELECTED_MODEL + '/' + str(episode) + '_spawn_point.csv', index=False)
+        df.to_csv(FOLDER_PATH + '/recordings/' + SELECTED_MODEL + '/' + spawn + '/' + str(episode) + '_spawn_point.csv', index=False)
 
     def get_recordings(self):
 
@@ -1127,33 +1143,42 @@ class DDPGAgent:
 
         """
 
-        global SELECTED_MODEL
+        global SELECTED_MODEL, SELECTED_SPAWNING_METHOD
 
-        path = FOLDER_PATH + '/recordings/' + SELECTED_MODEL + '/'
+        if SELECTED_SPAWNING_METHOD in [0, 1]:
+
+            spawn = 'in_front_goal_spawn' if SELECTED_SPAWNING_METHOD == 0 else 'random_spawn'
+            paths = [FOLDER_PATH + '/recordings/' + SELECTED_MODEL + '/' + spawn + '/']
+
+        else:
+            paths = [FOLDER_PATH + '/recordings/' + SELECTED_MODEL + '/random_spawn/', FOLDER_PATH + '/recordings/' + SELECTED_MODEL + '/in_front_goal_spawn/']
 
         recordings = []
         spawn_points = []
+        names = []
 
-        for filename in os.listdir(path):
+        for path in paths:
+            for filename in os.listdir(path):
 
-            if filename.endswith('.csv') and not filename.endswith('_spawn_point.csv'):
+                if filename.endswith('.csv') and not filename.endswith('_spawn_point.csv'):
 
-                episode_number = filename[:-4]
+                    episode_number = filename[:-4]
 
-                rec = np.loadtxt(os.path.join(path, filename), delimiter=',')
-                rec = (np.reshape(rec, (rec.shape[0], 2))).tolist()
+                    rec = np.loadtxt(os.path.join(path, filename), delimiter=',')
+                    rec = (np.reshape(rec, (rec.shape[0], 2))).tolist()
 
-                recordings.append(rec)
+                    recordings.append(rec)
 
-                df = pd.read_csv(os.path.join(path, episode_number + '_spawn_point.csv'))
+                    df = pd.read_csv(os.path.join(path, episode_number + '_spawn_point.csv'))
 
-                spawn_point = carla.Transform(carla.Location(x=float(df['x'][0]), y=float(df['y'][0]), z=float(df['z'][0])), carla.Rotation(yaw=float(df['yaw'][0])))
-                spawn_points.append(spawn_point)
-                 
-            else:
-                continue
+                    spawn_point = carla.Transform(carla.Location(x=float(df['x'][0]), y=float(df['y'][0]), z=float(df['z'][0])), carla.Rotation(yaw=float(df['yaw'][0])))
+                    spawn_points.append(spawn_point)
+                    names.append(episode_number)
+                     
+                else:
+                    continue
 
-        return recordings, spawn_points
+        return recordings, spawn_points, names
 
 # ---------------------------------------------------------------------------------------------------
 # REPLAY BUFFER CLASS
@@ -1409,7 +1434,7 @@ def process_init_inputs():
 
     """
 
-    global TRAINING_INDICATOR, SELECTED_MODEL, RANDOM_SPAWN, TRAINING_NAME, ACTIONS_SIZE, TOTAL_EPISODES
+    global TRAINING_INDICATOR, SELECTED_MODEL, RANDOM_SPAWN, TRAINING_NAME, ACTIONS_SIZE, TOTAL_EPISODES, SELECTED_SPAWNING_METHOD
 
     training_indicator = int(input('Select one option: \n \tPlay with trained model (press 0)\n \tTrain pretrained model (press 1)\n \tTrain new model (press 2)\n \tYour answer: '))
 
@@ -1442,9 +1467,10 @@ def process_init_inputs():
 
             if selected_spawning_method == 1:
                 name_appendix += '_in_front_goal_spawn'
+                SELECTED_SPAWNING_METHOD = 0
 
             elif selected_spawning_method == 2:
-                RANDOM_SPAWN = True
+                SELECTED_SPAWNING_METHOD = 1
                 name_appendix += '_random_spawn'
 
         training_name = str(input('Write the name of this training: \n \tYour answer: '))
@@ -1462,6 +1488,11 @@ def process_init_inputs():
 
         elif SELECTED_MODEL == 'throttle_and_steer':
             ACTIONS_SIZE = 2
+
+            selected_spawning_method = int(input('Select spawning method: \n \tAlways in front of goal (press 0)\n \tRandomly somewhere around goal (press 1)\n \tBoth methods (press 2)\n \tYour answer: '))
+
+            SELECTED_SPAWNING_METHOD = selected_spawning_method if selected_spawning_method in [0, 1, 2] else 0
+ 
 
 # ---------------------------------------------------------------------------------------------------
 # MAIN PROGRAM
@@ -1488,7 +1519,8 @@ if __name__ == '__main__':
 
     if not os.path.isdir('recordings'):
         os.makedirs('recordings/only_throttle')
-        os.makedirs('recordings/throttle_and_steer')
+        os.makedirs('recordings/throttle_and_steer/random_spawn')
+        os.makedirs('recordings/throttle_and_steer/in_front_goal_spawn')
 
     # ------------------- PROCESSING INITIAL INPUTS OF PROGRAM -------------------
     process_init_inputs()
@@ -1513,16 +1545,16 @@ if __name__ == '__main__':
 
             print('-----------------Playing started---------------')
 
-            recordings, spawn_points = agent.get_recordings()
+            recordings, spawn_points, names = agent.get_recordings()
 
             if not recordings:
                 print('No recordings to play')
             else:
 
                 current_rec = 1
-                for recording, spawn_point in zip(recordings, spawn_points):
+                for recording, spawn_point, name in zip(recordings, spawn_points, names):
                     _, _ = env.reset(spawn_point)
-                    print('Current playing: %d/%d' %(current_rec, len(recordings)), end='\r')
+                    print('Current recording: %s ---> %d/%d' %(name, current_rec, len(recordings)), end='\r')
                     env.play_recording(recording)
 
                     env.destroy_actors()
@@ -1610,11 +1642,9 @@ if __name__ == '__main__':
                     else:
                         print('Current step: %d/%d <<<>>> %s' %(step, STEPS_PER_EPISODE, info), end='\r')
 
-                    # -------------- RECORDING EPISODE IF IT IS GOOD -----------------
+                    # -------------- RECORDING EPISODE IF IT IS GOOD ENOUGH -----------------
 
-                    episodic_reward_threshold = 100 if SELECTED_MODEL == 'only_throttle' else 50
-
-                    if record_episode or episodic_reward >= episodic_reward_threshold:
+                    if record_episode == 1 or ((episodic_reward >= 100) and record_episode == -1):
                         agent.save_recording(actions_list, episode, spawn_point)
 
                     state = next_state
