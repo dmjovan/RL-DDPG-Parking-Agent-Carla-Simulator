@@ -371,7 +371,8 @@ class CarlaEnvironment:
                 spawn_point = self.random_spawn('random_entrance')
 
             else:
-                spawn_point = carla.Transform(carla.Location(x=17.2, y=-29.7, z=self.spawning_z_offset), carla.Rotation(yaw=random.choice([0.0, 180.0])))
+                # spawn_point = carla.Transform(carla.Location(x=17.2, y=-29.7, z=self.spawning_z_offset), carla.Rotation(yaw=random.choice([0.0, 180.0])))
+                spawn_point = carla.Transform(carla.Location(x=17.2, y=-29.7, z=self.spawning_z_offset), carla.Rotation(yaw=180.0))
 
         self.vehicle = self.world.spawn_actor(self.model_3, spawn_point)
         self.actor_list.append(self.vehicle)
