@@ -371,8 +371,10 @@ class CarlaEnvironment:
                 spawn_point = self.random_spawn('random_entrance')
 
             else:
-                # spawn_point = carla.Transform(carla.Location(x=17.2, y=-29.7, z=self.spawning_z_offset), carla.Rotation(yaw=random.choice([0.0, 180.0])))
-                spawn_point = carla.Transform(carla.Location(x=17.2, y=-29.7, z=self.spawning_z_offset), carla.Rotation(yaw=180.0))
+                if SELECTED_MODEL == 'only_throttle':
+                    spawn_point = carla.Transform(carla.Location(x=17.2, y=-29.7, z=self.spawning_z_offset), carla.Rotation(yaw=random.choice([0.0, 180.0])))
+                else: 
+                    spawn_point = carla.Transform(carla.Location(x=17.2, y=-29.7, z=self.spawning_z_offset), carla.Rotation(yaw=180.0))
 
         self.vehicle = self.world.spawn_actor(self.model_3, spawn_point)
         self.actor_list.append(self.vehicle)
@@ -1116,7 +1118,7 @@ class DDPGAgent:
         spawn = 'in_front_goal_spawn' if SELECTED_SPAWNING_METHOD == 0 else 'random_spawn'
 
         actions = np.array(actions_list).reshape((len(actions_list), 2))
-        np.savetxt(FOLDER_PATH + '/recordings/' + SELECTED_MODEL + '/' + spawn + '/' + str(episode) + '.csv', actions, delimiter=',')
+        np.savetxt(FOLDER_PATH + '/recordings/' + SELECTED_MODEL + '/' + spawn + '/' + TRAINING_NAME + '/' +  str(episode) + '.csv', actions, delimiter=',')
 
         d = {
              'x'  : [spawn_point.location.x],
@@ -1128,7 +1130,7 @@ class DDPGAgent:
         df = pd.DataFrame(d)
         df.dtype = 'float32'
 
-        df.to_csv(FOLDER_PATH + '/recordings/' + SELECTED_MODEL + '/' + spawn + '/' + str(episode) + '_spawn_point.csv', index=False)
+        df.to_csv(FOLDER_PATH + '/recordings/' + SELECTED_MODEL + '/' + spawn + '/' + TRAINING_NAME + '/' + str(episode) + '_spawn_point.csv', index=False)
 
     def get_recordings(self):
 
@@ -1141,24 +1143,20 @@ class DDPGAgent:
         :return:
             - recordings: list of all recordings
             - spawn_points: list of carla.Transforms for all recordings
+            - names: list of names of all recordings
 
         """
 
-        global SELECTED_MODEL, SELECTED_SPAWNING_METHOD
+        global SELECTED_MODEL, SELECTED_SPAWNING_METHOD, TRAINING_NAME
 
-        if SELECTED_SPAWNING_METHOD in [0, 1]:
-
-            spawn = 'in_front_goal_spawn' if SELECTED_SPAWNING_METHOD == 0 else 'random_spawn'
-            paths = [FOLDER_PATH + '/recordings/' + SELECTED_MODEL + '/' + spawn + '/']
-
-        else:
-            paths = [FOLDER_PATH + '/recordings/' + SELECTED_MODEL + '/random_spawn/', FOLDER_PATH + '/recordings/' + SELECTED_MODEL + '/in_front_goal_spawn/']
+        spawn = 'in_front_goal_spawn' if SELECTED_SPAWNING_METHOD == 0 else 'random_spawn'
+        path = FOLDER_PATH + '/recordings/' + SELECTED_MODEL + '/' + spawn + '/' + TRAINING_NAME + '/'
 
         recordings = []
         spawn_points = []
         names = []
 
-        for path in paths:
+        try:
             for filename in os.listdir(path):
 
                 if filename.endswith('.csv') and not filename.endswith('_spawn_point.csv'):
@@ -1178,6 +1176,9 @@ class DDPGAgent:
                      
                 else:
                     continue
+
+        except Exception as e: 
+            print(e)
 
         return recordings, spawn_points, names
 
@@ -1453,30 +1454,22 @@ def process_init_inputs():
         SELECTED_MODEL = 'throttle_and_steer' if selected_model == 2 else 'only_throttle'
 
         if SELECTED_MODEL == 'only_throttle':
-
             ACTIONS_SIZE = 1
-            name_appendix = '_only_throttle'
 
         elif SELECTED_MODEL == 'throttle_and_steer':
-
             ACTIONS_SIZE = 2
-            name_appendix = '_throttle_and_steer'
 
             selected_spawning_method = int(input('Select spawning method: \n \tAlways in front of goal (press 1)\n \tRandomly somewhere around goal (press 2)\n \tYour answer: '))
 
             selected_spawning_method = selected_spawning_method if selected_spawning_method in [1, 2] else 1
 
             if selected_spawning_method == 1:
-                name_appendix += '_in_front_goal_spawn'
                 SELECTED_SPAWNING_METHOD = 0
 
             elif selected_spawning_method == 2:
                 SELECTED_SPAWNING_METHOD = 1
-                name_appendix += '_random_spawn'
 
-        training_name = str(input('Write the name of this training: \n \tYour answer: '))
-
-        TRAINING_NAME = training_name + name_appendix
+        TRAINING_NAME = str(input('Write the name of this training: \n \tYour answer: '))
 
     else:
 
@@ -1490,9 +1483,11 @@ def process_init_inputs():
         elif SELECTED_MODEL == 'throttle_and_steer':
             ACTIONS_SIZE = 2
 
-            selected_spawning_method = int(input('Select spawning method: \n \tAlways in front of goal (press 0)\n \tRandomly somewhere around goal (press 1)\n \tBoth methods (press 2)\n \tYour answer: '))
+            selected_spawning_method = int(input('Select spawning method: \n \tAlways in front of goal (press 0)\n \tRandomly somewhere around goal (press 1)\n \tYour answer: '))
 
-            SELECTED_SPAWNING_METHOD = selected_spawning_method if selected_spawning_method in [0, 1, 2] else 0
+            SELECTED_SPAWNING_METHOD = selected_spawning_method if selected_spawning_method in [0, 1] else 0
+
+        TRAINING_NAME = str(input('Write the name of training you want to play: \n \tYour answer: '))
  
 
 # ---------------------------------------------------------------------------------------------------
@@ -1519,7 +1514,7 @@ if __name__ == '__main__':
         os.makedirs('replay_buffer_data/throttle_and_steer')
 
     if not os.path.isdir('recordings'):
-        os.makedirs('recordings/only_throttle')
+        os.makedirs('recordings/only_throttle/in_front_goal_spawn')
         os.makedirs('recordings/throttle_and_steer/random_spawn')
         os.makedirs('recordings/throttle_and_steer/in_front_goal_spawn')
 
