@@ -58,8 +58,8 @@ TOTAL_EPISODES = 1000
 STEPS_PER_EPISODE = 100
 AVERAGE_EPISODES_COUNT = 40
 
-CORRECT_POSITION_NON_MOVING_STEPS = 2 
-OFF_POSITION_NON_MOVING_STEPS = 10
+CORRECT_POSITION_NON_MOVING_STEPS = 5
+OFF_POSITION_NON_MOVING_STEPS = 20
 
 REPLAY_BUFFER_CAPACITY = 100000
 BATCH_SIZE = 64
@@ -583,7 +583,8 @@ class CarlaEnvironment:
             None
 
         :return:
-            - non_movement_indicator: boolean value that indicates if agent has violated NON_MOVING_STEPS ban
+            - correct_position_non_movement_indicator: boolean value that indicates if agent has not had moved for CORRECT_POSITION_NON_MOVING_STEPS steps in correct position
+            - off_position_non_movement_indicator: boolean value that indicates if agent has not had moved for OFF_POSITION_NON_MOVING_STEPS steps in any other position but correct
 
         """
 
@@ -1114,7 +1115,6 @@ class DDPGAgent:
 
         global SELECTED_MODEL, SELECTED_SPAWNING_METHOD
 
-            
         spawn = 'in_front_goal_spawn' if SELECTED_SPAWNING_METHOD == 0 else 'random_spawn'
 
         actions = np.array(actions_list).reshape((len(actions_list), 2))
